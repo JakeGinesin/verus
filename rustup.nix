@@ -14,7 +14,7 @@ stdenvNoCC.mkDerivation {
 
   postPatch = ''
     substituteInPlace rustup.py \
-      --subst-var-by rustVersion "${rust-bin}"
+      --subst-var-by rustVersion "${rust-bin.version}"
   '';
 
   installPhase = ''

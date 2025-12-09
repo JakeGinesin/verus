@@ -6,7 +6,7 @@ import argparse
 import subprocess
 
 # everything past @rustVersion@ arbitrary
-triple = "@rustVersion@-x86_64-nixos-nixos"
+triple = "@rustVersion@-x86_64-unknown-linux-gnu"
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
