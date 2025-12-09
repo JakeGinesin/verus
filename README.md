@@ -1,5 +1,5 @@
 ## Jake Notes
-- reproducible builds with just `nix build`
+- reproducible builds with just `nix build`. working version on branch `working`; still need to clean it up
 
 [![Quick Start](https://img.shields.io/badge/tutorial-quick%20start-informational)](https://verus-lang.github.io/verus/guide/getting_started.html) [![Verus docs](https://img.shields.io/badge/docs-verus-informational)](https://verus-lang.github.io/verus/guide/) [![Library Documentation](https://img.shields.io/badge/docs-vstd-informational)](https://verus-lang.github.io/verus/verusdoc/vstd/) [![project chat](https://img.shields.io/badge/zulip-join_chat-brightgreen.svg)](https://verus-lang.zulipchat.com)
 
