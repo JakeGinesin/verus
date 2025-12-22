@@ -29,7 +29,6 @@
         linters = [ pkgs.statix vargo verusfmt ];
         rust-bin = pkgs.rust-bin.fromRustupToolchainFile ./rust-toolchain.toml;
 
-        # Inline rustup
         rustup = pkgs.stdenvNoCC.mkDerivation {
           name = "rustup";
           src = ./tools/nix;
