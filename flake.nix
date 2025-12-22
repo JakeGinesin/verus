@@ -103,6 +103,7 @@
           meta = meta // { mainProgram = "verus"; };
         };
 
+        # EXPECTED_Z3_VERSION in tools/common/consts.rs
         z3 = pkgs.z3.overrideAttrs (finalAttrs: previousAttrs: {
           version = "4.12.5";
           src = pkgs.fetchFromGitHub {
