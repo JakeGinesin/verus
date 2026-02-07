@@ -1,9 +1,11 @@
 use crate::ast::{BinaryOp, Typ, UnaryOp, UnaryOpr, VarIdent};
 use crate::def::Spanned;
-use crate::sst::{Dest, Exp, ExpX, Stm, StmX, Stms, UniqueIdent};
+use crate::messages::Span;
+use crate::sst::{Dest, Exp, ExpX, LocalDecl, LocalDeclKind, Pars, Stm, StmX, Stms, UniqueIdent};
 use crate::sst_visitor::exp_visitor_check;
 use air::scope_map::ScopeMap;
 use indexmap::{IndexMap, IndexSet};
+use std::collections::HashMap;
 use std::sync::Arc;
 
 fn to_ident_set(input: &IndexSet<UniqueIdent>) -> IndexSet<VarIdent> {
@@ -31,7 +33,95 @@ pub(crate) fn get_loc_var(exp: &Exp) -> UniqueIdent {
     }
 }
 
-pub(crate) fn stm_assign(
+/// If this Stm node performs a (non-init) assignment, add it to the map.
+/// Shallow: does not recurse into sub-nodes.
+pub(crate) fn stm_get_mutations_shallow(stm: &Stm, m: &mut HashMap<VarIdent, Span>) {
+    match &stm.x {
+        StmX::Call { args, .. } => {
+            for arg in args.iter() {
+                if let ExpX::Loc(_) = &arg.x {
+                    let v = get_loc_var(arg);
+                    m.insert(v, arg.span.clone());
+                }
+            }
+        }
+        _ => {}
+    }
+
+    match &stm.x {
+        StmX::Call { dest: Some(dest), .. } | StmX::Assign { lhs: dest, .. } => {
+            let Dest { dest, is_init } = dest;
+            if !*is_init {
+                let v = get_loc_var(dest);
+                m.insert(v, stm.span.clone());
+            }
+        }
+        StmX::Call { dest: None, .. }
+        | StmX::Assert(..)
+        | StmX::AssertBitVector { .. }
+        | StmX::AssertQuery { .. }
+        | StmX::AssertCompute(..)
+        | StmX::Assume(..)
+        | StmX::Fuel(..)
+        | StmX::RevealString(..)
+        | StmX::DeadEnd(..)
+        | StmX::Return { .. }
+        | StmX::BreakOrContinue { .. }
+        | StmX::If(..)
+        | StmX::Loop { .. }
+        | StmX::OpenInvariant(..)
+        | StmX::ClosureInner { .. }
+        | StmX::Air(..)
+        | StmX::Block(..) => {}
+    }
+}
+
+/// Fill in the AssignMap and add var information to all loops in the Stm
+pub(crate) fn compute_assign_info(
+    assign_map: &mut AssignMap,
+    params: &Pars,
+    local_decls: &[LocalDecl],
+    stm: &Stm,
+) -> Stm {
+    let mut declared: IndexMap<UniqueIdent, Typ> = IndexMap::new();
+    let mut assigned: IndexSet<UniqueIdent> = IndexSet::new();
+
+    for param in params.iter() {
+        // REVIEW: isn't this redundant with below?
+        declared.insert(param.x.name.clone(), param.x.typ.clone());
+        assigned.insert(param.x.name.clone());
+    }
+
+    for decl in local_decls.iter() {
+        declared.insert(decl.ident.clone(), decl.typ.clone());
+    }
+
+    // REVIEW: This is needed because `stm_assign` doesn't otherwise pick up that these
+    // decls get initialized; are there any other decls like that?
+    for decl in local_decls.iter() {
+        if matches!(decl.kind, LocalDeclKind::ExecClosureParam { .. }) {
+            assigned.insert(decl.ident.clone());
+        }
+    }
+
+    let mut _modified = IndexSet::new();
+    let stm = stm_assign(assign_map, &declared, &mut assigned, &mut _modified, stm);
+
+    // Second pass:
+
+    let mut param_typs = vec![];
+    for decl in local_decls.iter() {
+        if matches!(decl.kind, LocalDeclKind::ExecClosureParam { .. } | LocalDeclKind::Param { .. })
+        {
+            param_typs.push((decl.ident.clone(), decl.typ.clone()));
+        }
+    }
+
+    stm_mutations(&param_typs, &mut im::HashSet::new(), &stm)
+}
+
+/// Fill in `typ_inv_vars` and `modified_vars` fields on all `Loop` nodes.
+fn stm_assign(
     assign_map: &mut AssignMap,
     declared: &IndexMap<UniqueIdent, Typ>,
     assigned: &mut IndexSet<UniqueIdent>,
@@ -141,6 +231,7 @@ pub(crate) fn stm_assign(
             decrease,
             typ_inv_vars,
             modified_vars,
+            pre_modified_params,
         } => {
             let mut pre_modified = modified.clone();
             *modified = IndexSet::new();
@@ -181,6 +272,7 @@ pub(crate) fn stm_assign(
                 decrease: decrease.clone(),
                 typ_inv_vars: Arc::new(typ_inv_vars),
                 modified_vars: Arc::new(modified_vars),
+                pre_modified_params: pre_modified_params.clone(),
             };
             Spanned::new(stm.span.clone(), loop_x)
         }
@@ -215,4 +307,132 @@ fn stms_assign(
     let stms: Vec<Stm> =
         stms.iter().map(|s| stm_assign(assign_map, declared, assigned, modified, s)).collect();
     Arc::new(stms)
+}
+
+/// Fill in `pre_modified_params` on all Loop nodes.
+/// This requires `modified_vars` to be filled in already
+/// (i.e., `stm_assign` needs to be called first).
+fn stm_mutations(
+    param_typs: &[(VarIdent, Typ)],
+    mutations: &mut im::HashSet<VarIdent>,
+    stm: &Stm,
+) -> Stm {
+    match &stm.x {
+        StmX::Assert(..)
+        | StmX::AssertBitVector { .. }
+        | StmX::AssertCompute(..)
+        | StmX::Assume(_)
+        | StmX::Fuel(..)
+        | StmX::RevealString(_)
+        | StmX::Return { .. }
+        | StmX::BreakOrContinue { .. }
+        | StmX::Air(_) => stm.clone(),
+        StmX::Call { dest, .. } => {
+            if let Some(Dest { is_init: false, dest }) = dest {
+                mutations.insert(get_loc_var(dest));
+            }
+            stm.clone()
+        }
+        StmX::Assign { lhs, rhs: _ } => {
+            if let Dest { is_init: false, dest } = lhs {
+                mutations.insert(get_loc_var(dest));
+            }
+            stm.clone()
+        }
+        StmX::AssertQuery { mode, typ_inv_exps, typ_inv_vars, body } => {
+            let body = stm_mutations(param_typs, mutations, body);
+            stm.new_x(StmX::AssertQuery {
+                mode: *mode,
+                typ_inv_exps: typ_inv_exps.clone(),
+                typ_inv_vars: typ_inv_vars.clone(),
+                body: body,
+            })
+        }
+        StmX::DeadEnd(body) => {
+            let m = mutations.clone();
+            let body = stm_mutations(param_typs, mutations, body);
+            *mutations = m;
+            stm.new_x(StmX::DeadEnd(body))
+        }
+        StmX::If(cond, thn, None) => {
+            let thn = stm_mutations(param_typs, mutations, thn);
+            stm.new_x(StmX::If(cond.clone(), thn, None))
+        }
+        StmX::If(cond, thn, Some(els)) => {
+            let pre_m = mutations.clone();
+
+            let thn = stm_mutations(param_typs, mutations, thn);
+            let mut thn_m = pre_m;
+            std::mem::swap(&mut thn_m, mutations);
+
+            let els = stm_mutations(param_typs, mutations, els);
+
+            *mutations = thn_m.union(mutations.clone());
+
+            stm.new_x(StmX::If(cond.clone(), thn, Some(els)))
+        }
+        StmX::Loop {
+            loop_isolation,
+            is_for_loop,
+            id,
+            label,
+            cond,
+            body,
+            invs,
+            decrease,
+            typ_inv_vars,
+            modified_vars,
+            pre_modified_params: _,
+        } => {
+            for v in modified_vars.iter() {
+                mutations.insert(v.clone());
+            }
+
+            let cond = match cond {
+                None => None,
+                Some((cond_stm, cond_exp)) => {
+                    let cond_stm = stm_mutations(param_typs, mutations, cond_stm);
+                    Some((cond_stm, cond_exp.clone()))
+                }
+            };
+            let body = stm_mutations(param_typs, mutations, body);
+
+            let mut pre_modified_params = vec![];
+            for (ident, typ) in param_typs {
+                if mutations.contains(ident) {
+                    pre_modified_params.push((ident.clone(), typ.clone()));
+                }
+            }
+
+            let loopx = StmX::Loop {
+                loop_isolation: *loop_isolation,
+                is_for_loop: *is_for_loop,
+                id: *id,
+                label: label.clone(),
+                cond: cond,
+                body: body,
+                invs: invs.clone(),
+                decrease: decrease.clone(),
+                typ_inv_vars: typ_inv_vars.clone(),
+                modified_vars: modified_vars.clone(),
+                pre_modified_params: Arc::new(pre_modified_params),
+            };
+            stm.new_x(loopx)
+        }
+        StmX::OpenInvariant(body) => {
+            let body = stm_mutations(param_typs, mutations, body);
+            stm.new_x(StmX::OpenInvariant(body))
+        }
+        StmX::ClosureInner { body, typ_inv_vars } => {
+            let body = stm_mutations(param_typs, mutations, body);
+            stm.new_x(StmX::ClosureInner { body, typ_inv_vars: typ_inv_vars.clone() })
+        }
+        StmX::Block(stms) => {
+            let mut v = vec![];
+            for stm in stms.iter() {
+                v.push(stm_mutations(param_typs, mutations, stm));
+            }
+            stm.new_x(StmX::Block(Arc::new(v)))
+        }
+    }
 }
