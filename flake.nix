@@ -82,7 +82,12 @@
           inherit version;
           srcs = [ ./source ./tools ./dependencies ];
           sourceRoot = "source";
-          cargoHash = "sha256-y3wfW3a8A/bfCYklV0DcOODvzcBuzXh1i8U14quW1xY=";
+          cargoLock = {
+            lockFile = ./source/Cargo.lock;
+            outputHashes = {
+              "getopts-0.2.21" = "sha256-N/QJvyOmLoU5TabrXi8i0a5s23ldeupmBUzP8waVOiU=";
+            };
+          };
           nativeBuildInputs = [ pkgs.makeBinaryWrapper rust-bin rustup vargo z3 ];
           buildInputs = [ rustup z3 ];
           buildPhase = ''
@@ -281,18 +286,6 @@
             vargo fmt -- --check
           '';
           installPhase = "touch $out";
-        };
-        apps.${system} = {
-          update = {
-            type = "app";
-            program = lib.getExe (pkgs.writeShellApplication {
-              name = "update";
-              runtimeInputs = [ pkgs.nix-update ];
-              text = lib.concatMapStringsSep "\n"
-                (package: "nix-update --flake ${package} || true")
-                (builtins.attrNames self.packages.${system});
-            });
-          };
         };
         devShells.${system}.default = (pkgs.mkShellNoCC.override {
           stdenv = pkgs.stdenvNoCC.override {
