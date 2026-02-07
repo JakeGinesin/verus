@@ -83,6 +83,16 @@ pub assume_specification<T>[ <[T]>::len ](slice: &[T]) -> (len: usize)
         len == spec_slice_len(slice),
 ;
 
+pub open spec fn spec_slice_is_empty<T>(slice: &[T]) -> bool {
+    slice@.len() == 0
+}
+
+#[verifier::when_used_as_spec(spec_slice_is_empty)]
+pub assume_specification<T>[ <[T]>::is_empty ](slice: &[T]) -> (b: bool)
+    ensures
+        b <==> slice@.len() == 0,
+;
+
 #[cfg(feature = "alloc")]
 #[verifier::external_body]
 pub exec fn slice_to_vec<T: Copy>(slice: &[T]) -> (out: alloc::vec::Vec<T>)
@@ -152,12 +162,19 @@ pub broadcast axiom fn axiom_spec_slice_index<T>(slice: &[T], i: int)
         0 <= i < spec_slice_len(slice) ==> (#[trigger] spec_slice_index(slice, i)) == slice@[i],
 ;
 
+pub broadcast axiom fn axiom_slice_has_resolved<T>(slice: &[T], i: int)
+    ensures
+        0 <= i < spec_slice_len(slice) ==> #[trigger] has_resolved_unsized::<[T]>(slice)
+            ==> has_resolved(#[trigger] slice@[i]),
+;
+
 pub broadcast group group_slice_axioms {
     axiom_spec_len,
     axiom_slice_get_usize,
     axiom_slice_ext_equal,
     axiom_spec_slice_update,
     axiom_spec_slice_index,
+    axiom_slice_has_resolved,
 }
 
 } // verus!
