@@ -163,7 +163,7 @@
           aarch64-linux = "sha256-+kPQBHmKI7HyCp7oSFNAm321hXwyonSSVXTTvo4tVSA=";
           x86_64-darwin = "sha256-SfDKEz5p75HGM4lkyQUNPBnQZKtU9cTch6KkTeN94+E=";
           aarch64-darwin = "sha256-Dkrqjn56UIZcNYKDFZkn2QVLWou4Vf0NjKIITSsweeU=";
-        }.${system} or "sha256-kHWanLxL180OPiDSvrxXjgyd/sKFHVgX5/SFfL+pJJs="; # default to linux
+        }.${system} or "sha256-kHWanLxL180OPiDSvrxXjgyd/sKFHVgX5/SFfL+pJJs="; # default to x86_64-linux
 
         z3Prebuilt = pkgs.stdenvNoCC.mkDerivation {
           pname = "z3";
@@ -199,7 +199,14 @@
             tag = "z3-${finalAttrs.version}";
             sha256 = "sha256-Qj9w5s02OSMQ2qA7HG7xNqQGaUacA1d4zbOHynq5k+A=";
           };
+          patches = [];
           NIX_CFLAGS_COMPILE = "-Wno-template-body -Wno-error=maybe-uninitialized -Wno-error=uninitialized";
+          # to fix error at InstallCheck time
+          postFixup = (previousAttrs.postFixup or "") + ''
+            if [ -f $dev/lib/pkgconfig/z3.pc ]; then
+              sed -i 's|''${exec_prefix}//|/|g' $dev/lib/pkgconfig/z3.pc
+            fi
+          '';
         });
 
         z3 = if z3SourceBuild then z3Source else z3Prebuilt;
@@ -249,7 +256,15 @@
         };
 
         cvc5' = pkgs.cvc5.override {
-          cadical = pkgs.cadical.override { version = "2.0.0"; };
+          cadical = pkgs.cadical.overrideAttrs (old: rec {
+            version = "2.0.0";
+            src = pkgs.fetchFromGitHub {
+              owner = "arminbiere";
+              repo = "cadical";
+              tag = "rel-${version}";
+              hash = "sha256-qoeEM9SdpuFuBPeQlCzuhPLcJ+bMQkTUTGiT8QdU8rc=";
+            };
+          });
         };
         cvc5Source = cvc5'.overrideAttrs (finalAttrs: previousAttrs: {
           version = cvc5Version;
