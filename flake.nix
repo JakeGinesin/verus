@@ -110,10 +110,10 @@
             popd
 
             mkdir -p $out/bin
-            ln -sf $out/verus $out/bin/verus
-            ln -sf $out/rust_verify $out/bin/rust_verify
-            ln -sf $out/cargo-verus $out/bin/cargo-verus
-            ln -sf $out/z3 $out/bin/z3
+            ln -s $out/verus $out/bin/verus
+            ln -s $out/rust_verify $out/bin/rust_verify
+            ln -s $out/cargo-verus $out/bin/cargo-verus
+            ln -s $out/z3 $out/bin/z3
             wrapProgram $out/bin/verus \
               --set VERUS_ROOT $out \
               --prefix PATH : ${lib.makeBinPath [ rustup rust-bin z3 cvc5 ]}
