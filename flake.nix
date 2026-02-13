@@ -89,7 +89,8 @@
             };
           };
           nativeBuildInputs = [ pkgs.makeBinaryWrapper rust-bin rustup vargo z3 ];
-          buildInputs = [ rustup z3 pkgs.zlib ];
+          buildInputs = [ rustup z3 pkgs.zlib ]
+            ++ lib.optionals pkgs.stdenv.isDarwin [ pkgs.libiconv ];
           buildPhase = ''
             runHook preBuild
             ln -s ${lib.getExe z3} ./z3
@@ -101,12 +102,17 @@
             runHook preInstall
             mkdir -p $out
             # cp -r target-verus/release -T $out
-            cp -r target-verus/release/. $out/
+            # cp -r target-verus/release/. $out/
+            
+            pushd target-verus/release
+            cp -R . $out/
+            popd
+
             mkdir -p $out/bin
-            ln -s $out/verus $out/bin/verus
-            ln -s $out/rust_verify $out/bin/rust_verify
-            ln -s $out/cargo-verus $out/bin/cargo-verus
-            ln -s $out/z3 $out/bin/z3
+            ln -sf $out/verus $out/bin/verus
+            ln -sf $out/rust_verify $out/bin/rust_verify
+            ln -sf $out/cargo-verus $out/bin/cargo-verus
+            ln -sf $out/z3 $out/bin/z3
             wrapProgram $out/bin/verus --prefix PATH : ${lib.makeBinPath [ rustup rust-bin z3 cvc5 ]}
             runHook postInstall
           '';
