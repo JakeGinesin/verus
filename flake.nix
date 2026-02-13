@@ -14,7 +14,6 @@
         "x86_64-linux"
         "x86_64-darwin"
         "aarch64-darwin"
-        "x86_64-windows"
       ];
       eachDefaultSystem = f: builtins.foldl' lib.attrsets.recursiveUpdate { }
         (map f systems);
@@ -47,7 +46,7 @@
           '';
           installPhase = ''
             runHook preInstall
-            install -Dm755 rustup.py -T $out/bin/rustup
+            install -m755 rustup.py -T $out/bin/rustup
             runHook postInstall
           '';
           meta = {
@@ -90,7 +89,7 @@
             };
           };
           nativeBuildInputs = [ pkgs.makeBinaryWrapper rust-bin rustup vargo z3 ];
-          buildInputs = [ rustup z3 ];
+          buildInputs = [ rustup z3 pkgs.zlib ];
           buildPhase = ''
             runHook preBuild
             ln -s ${lib.getExe z3} ./z3
@@ -101,7 +100,8 @@
           installPhase = ''
             runHook preInstall
             mkdir -p $out
-            cp -r target-verus/release -T $out
+            # cp -r target-verus/release -T $out
+            cp -r target-verus/release/. $out/
             mkdir -p $out/bin
             ln -s $out/verus $out/bin/verus
             ln -s $out/rust_verify $out/bin/rust_verify
@@ -142,7 +142,6 @@
               "x86_64-linux"
               "x86_64-darwin"
               "aarch64-darwin"
-              "x86_64-windows"
             ];
           };
         });
