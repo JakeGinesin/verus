@@ -114,7 +114,9 @@
             ln -sf $out/rust_verify $out/bin/rust_verify
             ln -sf $out/cargo-verus $out/bin/cargo-verus
             ln -sf $out/z3 $out/bin/z3
-            wrapProgram $out/bin/verus --prefix PATH : ${lib.makeBinPath [ rustup rust-bin z3 cvc5 ]}
+            wrapProgram $out/bin/verus \
+              --set VERUS_ROOT $out \
+              --prefix PATH : ${lib.makeBinPath [ rustup rust-bin z3 cvc5 ]}
             runHook postInstall
           '';
           doCheck = false;
