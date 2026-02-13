@@ -46,6 +46,7 @@
           '';
           installPhase = ''
             runHook preInstall
+            mkdir -p $out/bin
             install -m755 rustup.py -T $out/bin/rustup
             runHook postInstall
           '';
