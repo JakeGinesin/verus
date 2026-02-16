@@ -107,6 +107,7 @@
             # cp -r target-verus/release/. $out/
             
             ls -la target-verus
+            touch target-verus/release/verus-root
             pushd target-verus/release
             cp -R . $out/
             popd
