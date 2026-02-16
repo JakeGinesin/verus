@@ -107,6 +107,7 @@
             
             pushd target-verus/release
             cp -R . $out/
+            ls -la target-verus
             popd
 
             mkdir -p $out/bin
