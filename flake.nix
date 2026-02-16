@@ -113,7 +113,7 @@
             popd
 
             mkdir -p $out/bin
-            # cp $out/verus $out/bin/verus
+            cp $out/verus $out/bin/verus
             # ln -s $out/verus $out/bin/verus
             ln -s $out/rust_verify $out/bin/rust_verify
             ln -s $out/cargo-verus $out/bin/cargo-verus
@@ -121,7 +121,7 @@
             wrapProgram $out/bin/verus \
               --set VERUS_ROOT $out \
               --prefix PATH : ${lib.makeBinPath [ rustup rust-bin z3 cvc5 ]}
-            ln -s $out/verus $out/bin/verus
+            # ln -s $out/verus $out/bin/verus
             runHook postInstall
           '';
           doCheck = false;
