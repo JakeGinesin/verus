@@ -97,6 +97,7 @@
             ln -s ${lib.getExe z3} ./z3
             ln -sf ${./rust-toolchain.toml} ../rust-toolchain.toml
             vargo build --release
+            touch target-verus/release/verus-root
             runHook postBuild
           '';
           installPhase = ''
@@ -105,9 +106,9 @@
             # cp -r target-verus/release -T $out
             # cp -r target-verus/release/. $out/
             
+            ls -la target-verus
             pushd target-verus/release
             cp -R . $out/
-            ls -la target-verus
             popd
 
             mkdir -p $out/bin
