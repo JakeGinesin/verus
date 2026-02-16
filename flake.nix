@@ -113,8 +113,9 @@
             popd
 
             mkdir -p $out/bin
-            cp $out/verus $out/bin/verus
-            # ln -s $out/verus $out/bin/verus
+            touch $out/verus-root 
+            # cp $out/verus $out/bin/verus
+            ln -s $out/verus $out/bin/verus
             ln -s $out/rust_verify $out/bin/rust_verify
             ln -s $out/cargo-verus $out/bin/cargo-verus
             ln -s $out/z3 $out/bin/z3
