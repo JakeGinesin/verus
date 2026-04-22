@@ -1,29 +1,24 @@
 use crate::util::{err_span, vir_err_span_str};
-use rustc_ast::token::{Token, TokenKind};
+use rustc_ast::token::{LitKind, TokenKind};
 use rustc_ast::tokenstream::{TokenStream, TokenTree};
 use rustc_hir::{AttrArgs, Attribute};
 use rustc_span::Span;
 use vir::ast::{AcceptRecursiveType, Mode, TriggerAnnotation, VirErr, VirErrAs};
 
+/// The syntax tree of an attribute.
+///
+/// For example, `#[trigger(42)]` would be encoded as follows:
+/// `Fun(span, "trigger", [Lit(LitKind::Integer, "42")])`
 #[derive(Debug)]
-pub(crate) enum AttrTree {
+enum AttrTree {
+    /// Similar to a function call, e.g. `trigger(42)`
     Fun(Span, String, Option<Box<[AttrTree]>>),
+    /// A literal, e.g. `42`, `42.0`, `"forty-two"`, etc.
+    Lit(LitKind, String),
     //Eq(Span, String, String), // TODO(main_new)
 }
 
-pub(crate) fn token_to_string(token: &Token) -> Result<Option<String>, ()> {
-    match token.kind {
-        TokenKind::Literal(lit) => Ok(Some(lit.symbol.as_str().to_string())),
-        TokenKind::Ident(symbol, _) => Ok(Some(symbol.as_str().to_string())),
-        TokenKind::Comma => Ok(None),
-        _ => Err(()),
-    }
-}
-
-pub(crate) fn token_stream_to_trees(
-    span: Span,
-    stream: &TokenStream,
-) -> Result<Box<[AttrTree]>, ()> {
+fn token_stream_to_trees(span: Span, stream: &TokenStream) -> Result<Box<[AttrTree]>, ()> {
     let mut token_trees: Vec<&TokenTree> = Vec::new();
     for x in stream.iter() {
         // TODO(1.83) trees?
@@ -32,25 +27,30 @@ pub(crate) fn token_stream_to_trees(
     let mut i = 0;
     let mut trees: Vec<AttrTree> = Vec::new();
     while i < token_trees.len() {
-        match &token_trees[i] {
-            TokenTree::Token(token, _spacing) => {
-                if let Some(name) = token_to_string(token)? {
-                    let fargs = if i + 1 < token_trees.len() {
-                        if let TokenTree::Delimited(_, _, _, token_stream) = &token_trees[i + 1] {
-                            i += 1;
-                            Some(token_stream_to_trees(span, token_stream)?)
-                        } else {
-                            None
-                        }
-                    } else {
-                        None
-                    };
-                    trees.push(AttrTree::Fun(span, name, fargs));
-                }
-                i += 1;
+        let TokenTree::Token(token, _spacing) = &token_trees[i] else {
+            return Err(());
+        };
+        match token.kind {
+            TokenKind::Literal(lit) => {
+                let text = lit.symbol.as_str().to_string();
+                trees.push(AttrTree::Lit(lit.kind, text));
             }
+            TokenKind::Ident(symbol, _) => {
+                let name = symbol.as_str().to_string();
+                let fargs = if let Some(TokenTree::Delimited(_, _, _, token_stream)) =
+                    &token_trees.get(i + 1)
+                {
+                    i += 1;
+                    Some(token_stream_to_trees(span, token_stream)?)
+                } else {
+                    None
+                };
+                trees.push(AttrTree::Fun(span, name, fargs));
+            }
+            TokenKind::Comma => {}
             _ => return Err(()),
         }
+        i += 1;
     }
     Ok(trees.into_boxed_slice())
 }
@@ -260,12 +260,14 @@ pub(crate) enum Attr {
     AllowInSpec,
     // specify list of places where == is promoted to =~=
     AutoExtEqual(vir::ast::AutoExtEqual),
+    /// Label for a proof obligation, i.e. `#[verifier::proof_note("label")]` or `#[verifier::custom_err("label")]`
+    ProofNote {
+        span: Span,
+        text: String,
+        is_custom_err: bool,
+    },
     // add manual trigger to expression inside quantifier
     Trigger(Option<Vec<u64>>),
-    // custom error string to report for precondition failures
-    CustomReqErr(String),
-    // Add custom error message for expanded diagnostics (split expressions)
-    CustomErr(String),
     // verify using bitvector theory
     BitVector,
     // for 'atomic' operations (e.g., CAS)
@@ -352,12 +354,34 @@ pub(crate) enum Attr {
     StructuralConstWrapper,
     IgnoreOutsideNewMutRefExperiment,
     MigratePostconditionsWithMutRefs(bool),
+    TrackedSwap,
+    TrackedTakeOption,
 }
 
 fn get_trigger_arg(span: Span, attr_tree: &AttrTree) -> Result<u64, VirErr> {
     let err_fn = || err_span(span, format!("expected integer constant, found {:?}", &attr_tree));
     match attr_tree {
-        AttrTree::Fun(_, name, None) => name.parse::<u64>().or_else(|_e| err_fn()),
+        AttrTree::Lit(LitKind::Integer, digits) => digits.parse::<u64>().or_else(|_e| err_fn()),
+        _ => err_fn(),
+    }
+}
+
+/// Get the `"label"` part out of an attribute like `#[verifier::proof_note("label")]`
+fn get_proof_note_label(span: Span, attrs: &Option<Box<[AttrTree]>>) -> Result<&String, VirErr> {
+    let Some([AttrTree::Lit(LitKind::Str, label)]) = attrs.as_deref() else {
+        return err_span(span, "expected exactly one argument, a string literal");
+    };
+    Ok(label)
+}
+
+/// Get the `42` part out of an attribute like `#[rlimit(42)]`
+fn get_rlimit_arg(span: Span, attrs: &Option<Box<[AttrTree]>>) -> Result<f32, VirErr> {
+    let err_fn = || err_span(span, "expected number, or `infinity` for rlimit");
+    match attrs.as_deref() {
+        Some([AttrTree::Lit(LitKind::Float | LitKind::Integer, text)]) => {
+            text.parse::<f32>().or_else(|_| err_fn())
+        }
+        Some([AttrTree::Fun(_, text, None)]) if text == "infinity" => Ok(f32::INFINITY),
         _ => err_fn(),
     }
 }
@@ -389,6 +413,22 @@ pub(crate) fn parse_attrs(
                 }
                 AttrTree::Fun(_, name, None) if name == "proof" => v.push(Attr::Mode(Mode::Proof)),
                 AttrTree::Fun(_, name, None) if name == "exec" => v.push(Attr::Mode(Mode::Exec)),
+                AttrTree::Fun(span, name, attrs) if name == "proof_note" => {
+                    let label = get_proof_note_label(*span, attrs)?;
+                    v.push(Attr::ProofNote {
+                        span: *span,
+                        text: label.clone(),
+                        is_custom_err: false,
+                    })
+                }
+                AttrTree::Fun(span, name, attrs) if name == "custom_err" => {
+                    let label = get_proof_note_label(*span, attrs)?;
+                    v.push(Attr::ProofNote {
+                        span: *span,
+                        text: label.clone(),
+                        is_custom_err: true,
+                    })
+                }
                 AttrTree::Fun(_, name, None) if name == "trigger" => v.push(Attr::Trigger(None)),
                 AttrTree::Fun(span, name, Some(args)) if name == "trigger" => {
                     let mut groups: Vec<u64> = Vec::new();
@@ -487,16 +527,6 @@ pub(crate) fn parse_attrs(
                 AttrTree::Fun(_, arg, None) if arg == "invariant_block" => {
                     v.push(Attr::InvariantBlock)
                 }
-                AttrTree::Fun(_, arg, Some(box [AttrTree::Fun(_, msg, None)]))
-                    if arg == "custom_req_err" =>
-                {
-                    v.push(Attr::CustomReqErr(msg.clone()))
-                }
-                AttrTree::Fun(_, arg, Some(box [AttrTree::Fun(_, msg, None)]))
-                    if arg == "custom_err" =>
-                {
-                    v.push(Attr::CustomErr(msg.clone()))
-                }
                 AttrTree::Fun(_, arg, None) if arg == "bit_vector" => v.push(Attr::BitVector),
                 AttrTree::Fun(_, arg, None) if arg == "decreases_by" || arg == "recommends_by" => {
                     v.push(Attr::DecreasesBy)
@@ -535,16 +565,16 @@ pub(crate) fn parse_attrs(
                     v.push(Attr::LoopIsolation(false))
                 }
                 AttrTree::Fun(_, arg, Some(box [AttrTree::Fun(_, r, None)]))
-                    if arg == "migrate_postconditions_with_mut_refs" && r == "true" =>
+                    if arg == "deprecated_postcondition_mut_ref_style" && r == "true" =>
                 {
                     v.push(Attr::MigratePostconditionsWithMutRefs(true))
                 }
                 AttrTree::Fun(_, arg, Some(box [AttrTree::Fun(_, r, None)]))
-                    if arg == "migrate_postconditions_with_mut_refs" && r == "false" =>
+                    if arg == "deprecated_postcondition_mut_ref_style" && r == "false" =>
                 {
                     v.push(Attr::MigratePostconditionsWithMutRefs(false))
                 }
-                AttrTree::Fun(_, arg, _) if arg == "migrate_postconditions_with_mut_refs" => {
+                AttrTree::Fun(_, arg, _) if arg == "deprecated_postcondition_mut_ref_style" => {
                     v.push(Attr::MigratePostconditionsWithMutRefs(true))
                 }
                 AttrTree::Fun(_, arg, None) if arg == "allow_complex_invariants" => {
@@ -587,17 +617,9 @@ pub(crate) fn parse_attrs(
                     v.push(Attr::AutoExtEqual(auto_ext_equal))
                 }
                 AttrTree::Fun(_, arg, None) if arg == "memoize" => v.push(Attr::Memoize),
-                AttrTree::Fun(span, name, Some(box [AttrTree::Fun(_, r, None)]))
-                    if name == "rlimit" =>
-                {
-                    let Some(rlimit) = r
-                        .parse::<f32>()
-                        .ok()
-                        .or_else(|| if r == "infinity" { Some(f32::INFINITY) } else { None })
-                    else {
-                        return err_span(*span, "expected number, or `infinity` for rlimit");
-                    };
-                    v.push(Attr::RLimit(rlimit));
+                AttrTree::Fun(span, name, attrs) if name == "rlimit" => {
+                    let number = get_rlimit_arg(*span, attrs)?;
+                    v.push(Attr::RLimit(number));
                 }
                 AttrTree::Fun(_, arg, None) if arg == "truncate" => v.push(Attr::Truncate),
                 AttrTree::Fun(_, arg, None) if arg == "external_fn_specification" => {
@@ -656,6 +678,12 @@ pub(crate) fn parse_attrs(
                 }
                 AttrTree::Fun(_, arg, None) if arg == "exec_allows_no_decreases_clause" => {
                     v.push(Attr::ExecAllowNoDecreasesClause);
+                }
+                AttrTree::Fun(_, arg, None) if arg == "tracked_swap_primitive" => {
+                    v.push(Attr::TrackedSwap)
+                }
+                AttrTree::Fun(_, arg, None) if arg == "tracked_take_option_primitive" => {
+                    v.push(Attr::TrackedTakeOption)
                 }
                 _ => return err_span(span, "unrecognized verifier attribute"),
             },
@@ -815,8 +843,9 @@ pub(crate) fn parse_attrs(
                 },
             },
             AttrPrefix::Rustc => {
-                let AttrTree::Fun(span, name, _) = &attr;
-                v.push(Attr::UnsupportedRustcAttr(name.clone(), *span));
+                if let AttrTree::Fun(span, name, _) = &attr {
+                    v.push(Attr::UnsupportedRustcAttr(name.clone(), *span));
+                }
             }
         }
     }
@@ -978,15 +1007,19 @@ pub(crate) fn get_trigger(attrs: &[Attribute]) -> Result<Vec<TriggerAnnotation>,
     Ok(groups)
 }
 
-pub(crate) fn get_custom_err_annotations(attrs: &[Attribute]) -> Result<Vec<String>, VirErr> {
-    let mut v = Vec::new();
+pub(crate) fn get_proof_note_annotation(
+    attrs: &[Attribute],
+) -> Result<Option<(String, bool)>, VirErr> {
+    let mut label = None;
     for attr in parse_attrs(attrs, None)? {
-        match attr {
-            Attr::CustomErr(s) => v.push(s),
-            _ => {}
+        if let Attr::ProofNote { span, text, is_custom_err } = attr {
+            if label.is_some() {
+                return err_span(span, "at most one `proof_note` attribute is allowed");
+            }
+            label = Some((text, is_custom_err));
         }
     }
-    Ok(v)
+    Ok(label)
 }
 
 #[derive(Debug, Clone)]
@@ -1038,7 +1071,6 @@ pub(crate) struct VerifierAttrs {
     pub(crate) no_auto_trigger: bool,
     pub(crate) autospec: Option<String>,
     pub(crate) allow_in_spec: bool,
-    pub(crate) custom_req_err: Option<String>,
     pub(crate) bit_vector: bool,
     pub(crate) for_loop: bool,
     pub(crate) auto_decreases: bool,
@@ -1079,6 +1111,8 @@ pub(crate) struct VerifierAttrs {
     pub(crate) encoded_static: bool,
     pub(crate) structural_const_wrapper: bool,
     pub(crate) ignore_outside_new_mut_ref_experiment: bool,
+    pub(crate) tracked_swap: bool,
+    pub(crate) tracked_take_option: bool,
 }
 
 // Check for the `get_field_many_variants` attribute
@@ -1163,6 +1197,7 @@ pub(crate) fn get_external_attrs(
             }
             Attr::UsesUnerasedProxy => es.uses_unerased_proxy = true,
             Attr::StructuralConstWrapper => es.structural_const_wrapper = true,
+            Attr::MigratePostconditionsWithMutRefs(_) => {}
             Attr::UnsupportedRustcAttr(..) => {}
             _ => {
                 es.any_other_verus_specific_attribute = true;
@@ -1210,7 +1245,6 @@ pub(crate) fn get_verifier_attrs_maybe_check(
         no_auto_trigger: false,
         autospec: None,
         allow_in_spec: false,
-        custom_req_err: None,
         bit_vector: false,
         for_loop: false,
         auto_decreases: false,
@@ -1251,6 +1285,8 @@ pub(crate) fn get_verifier_attrs_maybe_check(
         encoded_static: false,
         structural_const_wrapper: false,
         ignore_outside_new_mut_ref_experiment: false,
+        tracked_swap: false,
+        tracked_take_option: false,
     };
     let mut unsupported_rustc_attr: Option<(String, Span)> = None;
     for attr in parse_attrs(attrs, diagnostics)? {
@@ -1291,7 +1327,6 @@ pub(crate) fn get_verifier_attrs_maybe_check(
             Attr::NoAutoTrigger => vs.no_auto_trigger = true,
             Attr::Autospec(method_ident) => vs.autospec = Some(method_ident),
             Attr::AllowInSpec => vs.allow_in_spec = true,
-            Attr::CustomReqErr(s) => vs.custom_req_err = Some(s.clone()),
             Attr::BitVector => vs.bit_vector = true,
             Attr::ForLoop => vs.for_loop = true,
             Attr::AutoDecreases => vs.auto_decreases = true,
@@ -1333,6 +1368,8 @@ pub(crate) fn get_verifier_attrs_maybe_check(
             Attr::IgnoreOutsideNewMutRefExperiment => {
                 vs.ignore_outside_new_mut_ref_experiment = true
             }
+            Attr::TrackedSwap => vs.tracked_swap = true,
+            Attr::TrackedTakeOption => vs.tracked_take_option = true,
             _ => {}
         }
     }

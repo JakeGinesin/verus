@@ -486,7 +486,7 @@ test_verify_one_file_with_options! {
                 }
             }
         }
-    } => Err(err) => assert_rust_error_msg(err, "cannot borrow `o_ref.0` as mutable, as it is behind a `&` reference")
+    } => Err(err) => assert_rust_error_msg_skip_spec_msgs(err, "cannot borrow `o_ref.0` as mutable, as it is behind a `&` reference")
 }
 
 test_verify_one_file_with_options! {
@@ -745,7 +745,7 @@ test_verify_one_file_with_options! {
                     assert(has_resolved(o->A_0.0.1)); // TODO(new_mut_ref): better triggering
 
                     *r_pair_0 = 20;
-                    assert(mut_ref_future(r_pair_0) == pair.0);
+                    assert(mut_ref_future(r_pair_0) == after_borrow(pair.0));
                     **rx = 21;
                     *ry = 22;
                 }
@@ -823,7 +823,7 @@ test_verify_one_file_with_options! {
                     assert(has_resolved(o->A_0.0.1));
 
                     *r_pair_0 = 20;
-                    assert(mut_ref_future(r_pair_0) == pair.0);
+                    assert(mut_ref_future(r_pair_0) == after_borrow(pair.0));
                     **rx = 21;
                     *ry = 22;
                 }
@@ -910,7 +910,7 @@ test_verify_one_file_with_options! {
             assert(has_resolved(o->A_0.0.1)); // TODO(new_mut_ref): better triggering
 
             *r_pair_0 = 20;
-            assert(mut_ref_future(r_pair_0) == pair.0);
+            assert(mut_ref_future(r_pair_0) == after_borrow(pair.0));
             **rx = 21;
             *ry = 22;
 
@@ -982,7 +982,7 @@ test_verify_one_file_with_options! {
             assert(has_resolved(o->A_0.0.1));
 
             *r_pair_0 = 20;
-            assert(mut_ref_future(r_pair_0) == pair.0);
+            assert(mut_ref_future(r_pair_0) == after_borrow(pair.0));
             **rx = 21;
             *ry = 22;
 
@@ -1063,8 +1063,6 @@ test_verify_one_file_with_options! {
             let mut o = bg;
             match o {
                 BigEnum::A(((r_pair_0, rx), ry)) => {
-                    assume(has_resolved(o->A_0.0)); // TODO(new_mut_ref): incompleteness in resolution analysis
-
                     assert(*r_pair_0 == 4);
                     assert(**rx == 0);
                     assert(*ry == 1);
@@ -1682,7 +1680,7 @@ test_verify_one_file_with_options! {
                 assert(pair === (2, 3));
                 assert(big_pair.0 === 4);
             } else {
-                assert(has_resolved(big_pair.1)); // TODO(new_mut_ref): triggers
+                assert(has_resolved(big_pair.1)); // TODO(new_mut_ref): triggering
                 assert(pair === (2, 3));
                 assert(big_pair.0 === 4);
             }
@@ -2437,7 +2435,7 @@ test_verify_one_file_with_options! {
         fn test<T>(t: &mut Tracked<T>) {
             let Tracked(r) = t;
         }
-        // TODO(new_mut_ref): needs better error msg
+        // TODO(new_mut_ref): (low-pri) needs better error msg
     } => Err(err) => assert_rust_error_msg(err, "cannot move out of a mutable reference")
 }
 
@@ -2447,7 +2445,7 @@ test_verify_one_file_with_options! {
             let Ghost(r) = t;
             assert(r == (*t));
         }
-        // TODO(new_mut_ref): is this the desired behavior?
+        // TODO(new_mut_ref): (blocking) is this the desired behavior?
     } => Ok(())
 }
 
@@ -2486,8 +2484,7 @@ test_verify_one_file_with_options! {
 }
 
 test_verify_one_file_with_options! {
-    // TODO(new_mut_ref): combination mut param and unwrapped param gives messed up VIR
-    #[ignore] #[test] mut_ref_ghost_binder_forbidden_trk_type ["new-mut-ref"] => verus_code! {
+    #[test] mut_ref_ghost_binder_forbidden_trk_type ["new-mut-ref"] => verus_code! {
         enum Opt<T> { Some(T), None }
         struct X { a: u64 }
 
@@ -3203,14 +3200,15 @@ test_verify_one_file_with_options! {
             assert(b == 6);
             assert(false); // FAILS
         }
-    } => Err(err) => assert_fails(err, 1)
+    } => Err(err) =>
+
+     assert_fails(err, 1)
 }
 
 test_verify_one_file_with_options! {
     #[test] partial_move_out_of_enum2 ["new-mut-ref"] => verus_code! {
-        // One way to get around the error more legitimately is to use an enum where
-        // one variant is impossible.
-        // However, I am told this may be disallowed in the future as well.
+        // One way to get around the error more legitimately was to use an enum where
+        // one variant is impossible, but this is no longer allowed as of 1.95.0.
 
         enum Option<T, U> { Some(T), None(U) }
         use crate::Option::Some;
@@ -3258,7 +3256,10 @@ test_verify_one_file_with_options! {
             assert(b == 6);
             assert(false); // FAILS
         }
-    } => Err(err) => assert_fails(err, 1)
+    } => Err(err) => assert_rust_error_msgs(err, &[
+        "use of partially moved value: `x`",
+        "use of partially moved value: `x`",
+    ])
 }
 
 test_verify_one_file_with_options! {
@@ -3420,7 +3421,7 @@ test_verify_one_file_with_options! {
                     consume(t);
                 }
                 Foo::Bar(t) => {
-                    // TODO(new_mut_ref): this should pass; the resolution goes to a "MatchIntermediate" position which gets dropped
+                    // TODO(new_mut_ref): (completeness) this should pass; the resolution goes to a "MatchIntermediate" position which gets dropped
                     assert(has_resolved(b)); // FAILS
                 }
             }
@@ -3503,7 +3504,7 @@ test_verify_one_file_with_options! {
             match foo {
                 (true, x, _) | (false, _, x) => {
                     consume(x);
-                    // TODO(new_mut_ref): these ought to pass
+                    // TODO(new_mut_ref): (completeness) these ought to pass
                     assert(foo.0 ==> has_resolved(foo.2)); // FAILS
                     assert(!foo.0 ==> has_resolved(foo.1)); // FAILS
                 }
@@ -3890,7 +3891,7 @@ test_verify_one_file_with_options! {
             let mut o_ref = &o;
             let Some(ref mut i) = o_ref else { loop{} };
         }
-    } => Err(err) => assert_rust_error_msg(err, "cannot borrow `o_ref.0` as mutable, as it is behind a `&` reference")
+    } => Err(err) => assert_rust_error_msg_skip_spec_msgs(err, "cannot borrow `o_ref.0` as mutable, as it is behind a `&` reference")
 }
 
 test_verify_one_file_with_options! {
@@ -4042,7 +4043,7 @@ test_verify_one_file_with_options! {
             assert(has_resolved(o->A_0.0.1)); // TODO(new_mut_ref): better triggering
 
             *r_pair_0 = 20;
-            assert(mut_ref_future(r_pair_0) == pair.0);
+            assert(mut_ref_future(r_pair_0) == after_borrow(pair.0));
             **rx = 21;
             *ry = 22;
 
@@ -4119,7 +4120,7 @@ test_verify_one_file_with_options! {
             assert(has_resolved(o->A_0.0.1)); // TODO(new_mut_ref): better triggering
 
             *r_pair_0 = 20;
-            assert(mut_ref_future(r_pair_0) == pair.0);
+            assert(mut_ref_future(r_pair_0) == after_borrow(pair.0));
             **rx = 21;
             *ry = 22;
 

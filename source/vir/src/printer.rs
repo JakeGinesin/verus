@@ -236,6 +236,7 @@ impl ToDebugSNode for air::ast::TypX {
             TypX::BitVec(size) => {
                 Node::List(vec![Node::Atom("BitVec".to_string()), size.to_node(opts)])
             }
+            TypX::Float { exp_bits, sig_bits } => Node::Atom(format!("Float{exp_bits}_{sig_bits}")),
         }
     }
 }
@@ -369,11 +370,28 @@ impl<K: ToDebugSNode, V: ToDebugSNode> ToDebugSNode for std::collections::HashMa
     }
 }
 
+impl<K: ToDebugSNode, V: ToDebugSNode> ToDebugSNode for indexmap::IndexMap<K, V> {
+    fn to_node(&self, opts: &ToDebugSNodeOpts) -> Node {
+        let mut nodes = vec![];
+        for (k, v) in self.iter() {
+            nodes.push(Node::List(vec![k.to_node(opts), v.to_node(opts)]));
+        }
+        Node::List(nodes)
+    }
+}
+
 fn path_to_node(path: &Path) -> Node {
-    Node::Atom(format!(
-        "\"{}\"",
-        crate::def::path_to_string(path).replace("{", "_$LBRACE_").replace("}", "_$RBRACE_")
-    ))
+    let s = &path.segments.iter().map(|s| s.to_string()).collect::<Vec<_>>().join("::");
+    let k = crate::def::krate_to_string_ignore_stable_id(&path.krate);
+    let path_string = k + "::" + &s;
+    let path_string = path_string.replace("{", "_$LBRACE_").replace("}", "_$RBRACE_");
+    Node::Atom(path_string)
+}
+
+impl ToDebugSNode for CrateId {
+    fn to_node(&self, _opts: &ToDebugSNodeOpts) -> Node {
+        Node::Atom(crate::def::krate_to_string_ignore_stable_id(self))
+    }
 }
 
 impl ToDebugSNode for Path {

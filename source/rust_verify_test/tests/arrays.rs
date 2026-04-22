@@ -76,7 +76,7 @@ test_verify_one_file! {
         requires
             *old(i) < 10,
         ensures
-            ret == old(i),
+            ret == *old(i),
             *i == *old(i) + 1,
         {
             let oldi = *i;
@@ -329,6 +329,19 @@ test_verify_one_file! {
         exec fn test() {
             let ghost a = [3u64, 4, 5];
             assert(a[1] == 4);
+        }
+    } => Ok(())
+}
+
+test_verify_one_file! {
+    #[test] test_array_index_generic verus_code! {
+        use vstd::prelude::*;
+
+        proof fn test<A, const N: usize>(a: [A; N], i: int)
+            requires 0 <= i < N
+        {
+            use vstd::array::array_view;
+            assert(a@[i] == array_index(a, i));
         }
     } => Ok(())
 }

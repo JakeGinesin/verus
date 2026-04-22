@@ -262,7 +262,7 @@ pub(crate) fn translate_trait<'tcx>(
             let ex_assoc_item = ex_assoc_items.find_by_ident_and_kind(
                 tcx,
                 *ident,
-                assoc_item.as_tag(),
+                assoc_item.tag(),
                 ex_trait_id_for,
             );
             if mode == Mode::Spec {
@@ -301,6 +301,7 @@ pub(crate) fn translate_trait<'tcx>(
             None
         };
 
+        let trait_extension_in_spec = if is_verus_spec { trait_extension.clone() } else { None };
         match kind {
             TraitItemKind::Fn(sig, fun) => {
                 // putting param_names here ensures that Vec in TraitFn::Required case below lives long enough
@@ -321,8 +322,6 @@ pub(crate) fn translate_trait<'tcx>(
                     }
                 };
                 // requires and ensures on exec functions can refer to spec extension trait:
-                let trait_extension_in_spec =
-                    if is_verus_spec { trait_extension.clone() } else { None };
                 let fun = check_item_fn(
                     ctxt,
                     &mut methods,
@@ -332,7 +331,7 @@ pub(crate) fn translate_trait<'tcx>(
                     visibility.clone(),
                     module_path,
                     attrs,
-                    sig,
+                    crate::rust_to_vir_func::FnOrConstSig::sig(sig),
                     Some((trait_generics, trait_def_id)),
                     item_generics,
                     body_id,
@@ -340,6 +339,49 @@ pub(crate) fn translate_trait<'tcx>(
                     ex_item_id_for,
                     external_info,
                     None,
+                    &mut vir.opaque_types,
+                )?;
+                if let Some(fun) = fun {
+                    method_names.push(fun);
+                }
+            }
+            TraitItemKind::Const(_ty, body_opt, _is_type_const) => {
+                let param_names = vec![];
+                let (body_id, has_default) = match body_opt {
+                    Some(_) if ex_trait_id_for.is_some() && !is_verus_spec => {
+                        return err_span(
+                            *span,
+                            format!("`external_trait_specification` functions cannot have bodies"),
+                        );
+                    }
+                    Some(rustc_hir::ConstItemRhs::Body(body_id)) => {
+                        (CheckItemFnEither::BodyId(body_id), true)
+                    }
+                    Some(_) => {
+                        crate::unsupported_err!(trait_span, "non-expression trait const default")
+                    }
+                    None => (CheckItemFnEither::ParamNames(param_names.as_slice()), false),
+                };
+                let mid_ty = ctxt.tcx.type_of(owner_id.to_def_id()).skip_binder();
+                let typ = ctxt.mid_ty_to_vir(owner_id.to_def_id(), *span, &mid_ty, false, None)?;
+                let fun = crate::rust_to_vir_func::check_item_fn(
+                    ctxt,
+                    &mut methods,
+                    None,
+                    owner_id.to_def_id(),
+                    FunctionKind::TraitMethodDecl { trait_path: trait_path.clone(), has_default },
+                    visibility.clone(),
+                    module_path,
+                    attrs,
+                    crate::rust_to_vir_func::FnOrConstSig::const_var(*span, typ),
+                    Some((trait_generics, trait_def_id)),
+                    item_generics,
+                    body_id,
+                    ex_trait_id_for.map(|d| (d, trait_extension_in_spec)),
+                    ex_item_id_for,
+                    external_info,
+                    None,
+                    &mut vir.opaque_types,
                 )?;
                 if let Some(fun) = fun {
                     method_names.push(fun);
@@ -421,9 +463,6 @@ pub(crate) fn translate_trait<'tcx>(
                         }
                     }
                 }
-            }
-            TraitItemKind::Const(_, _) => {
-                return err_span(trait_span, "Verus does not yet support associated constants");
             }
         }
     }
