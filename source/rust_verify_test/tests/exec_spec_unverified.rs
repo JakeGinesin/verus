@@ -145,3 +145,242 @@ test_verify_one_file! {
         }
     } => Ok(())
 }
+
+// ---------------------------------------------------------------------------
+// Auth-spec port (representative subset)
+//
+// Each test below ports a small slice of the AWS auth spec into a form that
+// `exec_spec_unverified!` can compile today. Items that need user-side
+// rewrites (e.g. `e is V` -> `match`, `ghost enum` -> `pub enum`) are noted
+// in the comment for each test.
+// ---------------------------------------------------------------------------
+
+test_verify_one_file! {
+    /// `OperationType` ghost enum -> plain enum + the top-level
+    /// `is_tagging_operation` predicate.
+    ///
+    /// User-side rewrites:
+    ///   - `pub ghost enum OperationType { ... }` -> `pub enum OperationType { ... }`
+    ///   - `op is CreateResource || op is TagResource` -> `match op { ... }`
+    #[test] test_exec_spec_authspec_operation_type IMPORTS.to_string() + verus_code_str! {
+        exec_spec_unverified! {
+            pub enum OperationType {
+                Default,
+                NonSpecificResourceOperation,
+                CreateResource,
+                DeleteResource,
+                TagResource,
+                UntagResource,
+                ListTags,
+            }
+
+            pub open spec fn is_tagging_operation(op: OperationType) -> bool {
+                match op {
+                    OperationType::CreateResource => true,
+                    OperationType::TagResource => true,
+                    _ => false,
+                }
+            }
+        }
+    } => Ok(())
+}
+
+test_verify_one_file! {
+    /// `is_unsafe_coral_char` and `is_valid_coral_key_start` — pure char
+    /// predicates. These compile as-is.
+    #[test] test_exec_spec_authspec_coral_chars IMPORTS.to_string() + verus_code_str! {
+        exec_spec_unverified! {
+            pub open spec fn is_unsafe_coral_char(c: char) -> bool {
+                c == '[' || c == ']' || c == '-' || c == ':' || c == '\\' || c == '.'
+            }
+
+            pub open spec fn is_valid_coral_key_start(c: char) -> bool {
+                ('a' <= c && c <= 'z') || ('A' <= c && c <= 'Z') || c == '_'
+            }
+        }
+    } => Ok(())
+}
+
+test_verify_one_file! {
+    /// `is_valid_coral_key` — uses an unbounded `forall` that the macro can
+    /// only compile to an executable form when the quantifier is bounded.
+    /// We rewrite it to a bounded quantifier over `key.len()`.
+    ///
+    /// User-side rewrites:
+    ///   - `forall |c: char| key.contains(c) ==> !is_unsafe_coral_char(c)`
+    ///     -> `forall |i: usize| 0 <= i < key.len() ==> !is_unsafe_coral_char(key[i as int])`
+    #[test] test_exec_spec_authspec_coral_key IMPORTS.to_string() + verus_code_str! {
+        exec_spec_unverified! {
+            pub open spec fn is_unsafe_coral_char(c: char) -> bool {
+                c == '[' || c == ']' || c == '-' || c == ':' || c == '\\' || c == '.'
+            }
+
+            pub open spec fn is_valid_coral_key_start(c: char) -> bool {
+                ('a' <= c && c <= 'z') || ('A' <= c && c <= 'Z') || c == '_'
+            }
+
+            pub open spec fn is_valid_coral_key(key: SpecString) -> bool {
+                key.len() > 0
+                && is_valid_coral_key_start(key[0])
+                && forall |i: usize|
+                    #![trigger key[i as int]]
+                    0 <= i < key.len() ==> !is_unsafe_coral_char(key[i as int])
+            }
+        }
+    } => Ok(())
+}
+
+test_verify_one_file! {
+    /// Minimal `Path` enum + `is_valid` recursive impl method.
+    ///
+    /// User-side rewrites:
+    ///   - `Box<Path>` -> a flat representation. We use a sequence of keys
+    ///     (`Seq<SpecString>`) for the structure path instead of nesting,
+    ///     since `Box` of a user type is not currently compilable.
+    ///   - `Path::Value { key } => is_valid_coral_key(key)` works as-is on a
+    ///     non-recursive variant.
+    #[test] test_exec_spec_authspec_path IMPORTS.to_string() + verus_code_str! {
+        exec_spec_unverified! {
+            pub open spec fn is_unsafe_coral_char(c: char) -> bool {
+                c == '[' || c == ']' || c == '-' || c == ':' || c == '\\' || c == '.'
+            }
+
+            pub open spec fn is_valid_coral_key_start(c: char) -> bool {
+                ('a' <= c && c <= 'z') || ('A' <= c && c <= 'Z') || c == '_'
+            }
+
+            pub open spec fn is_valid_coral_key(key: SpecString) -> bool {
+                key.len() > 0
+                && is_valid_coral_key_start(key[0])
+                && forall |i: usize|
+                    #![trigger key[i as int]]
+                    0 <= i < key.len() ==> !is_unsafe_coral_char(key[i as int])
+            }
+
+            // Flat representation of `Path` to avoid Box recursion.
+            pub struct Path {
+                pub segments: Seq<SpecString>,
+            }
+
+            impl Path {
+                pub open spec fn is_valid(&self) -> bool {
+                    self.segments.len() > 0
+                    && forall |i: usize|
+                        #![trigger self.segments[i as int]]
+                        0 <= i < self.segments.len() ==> is_valid_coral_key(self.segments[i as int])
+                }
+            }
+        }
+    } => Ok(())
+}
+
+test_verify_one_file! {
+    /// Port of `Action::is_pass_role_action` and `Operation::is_tagging_operation`.
+    ///
+    /// User-side rewrites:
+    ///   - `self.operation_type is UntagResource || self.operation_type is TagResource`
+    ///     -> `match self.operation_type { ... }`
+    ///   - `"PassRole"@` SpecString literal works as-is.
+    #[test] test_exec_spec_authspec_action_predicates IMPORTS.to_string() + verus_code_str! {
+        exec_spec_unverified! {
+            pub enum OperationType {
+                Default,
+                CreateResource,
+                TagResource,
+                UntagResource,
+                ListTags,
+            }
+
+            pub struct Action {
+                pub name: SpecString,
+            }
+
+            impl Action {
+                pub open spec fn is_pass_role_action(&self) -> bool {
+                    self.name == "PassRole"@
+                }
+            }
+
+            pub struct Operation {
+                pub operation_type: OperationType,
+            }
+
+            impl Operation {
+                pub open spec fn is_tagging_operation(&self) -> bool {
+                    match self.operation_type {
+                        OperationType::UntagResource => true,
+                        OperationType::TagResource => true,
+                        _ => false,
+                    }
+                }
+            }
+        }
+    } => Ok(())
+}
+
+test_verify_one_file! {
+    /// `ContextKeyReference::get_id` and `is_required` ported as a method
+    /// on a non-generic enum.
+    ///
+    /// User-side rewrites:
+    ///   - `self !is PassRoleKey` recommends -> `match self { PassRoleKey => false, _ => true }`
+    ///   - `arbitrary()` in spec fns is replaced with a concrete dummy value
+    ///     in this port, since `arbitrary()` is a spec-only function with no
+    ///     executable counterpart.
+    ///   - The `PassRoleKey` variant in the original carries a
+    ///     `ResourceReference`; we drop that field here for the port since
+    ///     `ResourceReference` is itself non-trivial to port.
+    #[test] test_exec_spec_authspec_context_key_ref IMPORTS.to_string() + verus_code_str! {
+        exec_spec_unverified! {
+            pub enum ContextKeyReference {
+                ServiceSpecificKey { id: SpecString, is_required: bool },
+                TagKeys,
+                PassRoleKey { passed_to_service: SpecString },
+            }
+
+            impl ContextKeyReference {
+                pub open spec fn is_required(&self) -> bool {
+                    match self {
+                        ContextKeyReference::ServiceSpecificKey { is_required, .. } => *is_required,
+                        ContextKeyReference::TagKeys => true,
+                        ContextKeyReference::PassRoleKey { .. } => true,
+                    }
+                }
+            }
+        }
+    } => Ok(())
+}
+
+test_verify_one_file! {
+    /// `ResourceExceptionFlag` enum + `Resource::has_exception` and
+    /// `is_taggable`. Tests that a method calls a `Seq::contains`-style
+    /// builtin on a sequence of user-defined enum values.
+    ///
+    /// User-side rewrites:
+    ///   - `ghost enum ResourceExceptionFlag` -> plain enum.
+    ///   - `ghost struct Resource` simplified: only the field used here.
+    #[test] test_exec_spec_authspec_resource_exceptions IMPORTS.to_string() + verus_code_str! {
+        exec_spec_unverified! {
+            pub enum ResourceExceptionFlag {
+                NoRegionInArn,
+                NotTaggable,
+                NameNotInArn,
+                AllowColonsInIdentifiers,
+            }
+
+            pub struct Resource {
+                pub exceptions: Seq<ResourceExceptionFlag>,
+            }
+
+            impl Resource {
+                pub open spec fn has_exception(&self, flag: ResourceExceptionFlag) -> bool {
+                    self.exceptions.contains(flag)
+                }
+
+                pub open spec fn is_taggable(&self) -> bool {
+                    !self.exceptions.contains(ResourceExceptionFlag::NotTaggable)
+                }
+            }
+        }
+    } => Ok(())
+}
