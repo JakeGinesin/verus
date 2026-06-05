@@ -1508,7 +1508,10 @@ pub fn expand(input: TokenStream, verified: bool) -> TokenStream {
         // Strategy impls compile against plain rustc (they target Exec*
         // types defined inside the engine block above) so they sit outside
         // any verus! wrapper. Gating on cfg(test) keeps them out of normal
-        // builds where proptest isn't a dependency.
+        // builds where proptest isn't a dependency, AND keeps them invisible
+        // to external integration tests. To assert PBT bug-detection from
+        // integration tests, write tests in `src/lib.rs` under
+        // `#[cfg(test)] mod ...`.
         #[cfg(test)]
         #[allow(non_snake_case)]
         #[allow(unused_imports)]
