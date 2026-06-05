@@ -9,11 +9,11 @@ use verus_syn::parse::{Parse, ParseStream};
 use verus_syn::spanned::Spanned;
 use verus_syn::token::Comma;
 use verus_syn::{
-    Arm, AttrStyle, Attribute, BinOp, Block, Error, Expr, ExprBinary, ExprClosure, ExprMatches,
-    ExprPath, Fields, FnArgKind, FnMode, GenericArgument, Ident, ImplItem, Index, Item, ItemEnum,
-    ItemFn, ItemImpl, ItemStruct, Lit, MatchesOpExpr, MatchesOpToken, Member, Meta, Pat, PatType,
-    Path, PathArguments, PathSegment, ReturnType, Signature, Stmt, Type, UnOp, Visibility,
-    parse_macro_input,
+    Arm, AttrStyle, Attribute, BinOp, Block, Error, Expr, ExprBinary, ExprClosure, ExprIs,
+    ExprIsNot, ExprMatches, ExprPath, Fields, FnArgKind, FnMode, GenericArgument, Ident, ImplItem,
+    Index, Item, ItemEnum, ItemFn, ItemImpl, ItemStruct, Lit, MatchesOpExpr, MatchesOpToken,
+    Member, Meta, Pat, PatType, Path, PathArguments, PathSegment, ReturnType, Signature, Stmt,
+    Type, UnOp, Visibility, parse_macro_input,
 };
 
 /// Checks if the given path is of the form
@@ -629,6 +629,41 @@ fn compile_enum(item_enum: &ItemEnum) -> Result<TokenStream2, Error> {
 
     let vis = &item_enum.vis;
 
+    // Generate `exec_is_<Variant>(&self) -> bool` predicates on the Exec
+    // enum, used to compile `e is Variant` expressions in user code.
+    // We use the enum's visibility on the impl block so the ensures clause
+    // (which references the spec-side enum constructor) is no wider than the
+    // enum's visibility allows.
+    let is_variant_methods = item_enum
+        .variants
+        .iter()
+        .map(|variant| {
+            let variant_name = &variant.ident;
+            let method_name = Ident::new(
+                &format!("exec_is_{}", variant_name),
+                variant_name.span(),
+            );
+            let pat = match &variant.fields {
+                Fields::Named(_) => quote! { #exec_name::#variant_name { .. } },
+                Fields::Unnamed(_) => quote! { #exec_name::#variant_name(..) },
+                Fields::Unit => quote! { #exec_name::#variant_name },
+            };
+            let span = variant.span();
+            quote_spanned! { span =>
+                #[allow(unreachable_patterns)]
+                #[allow(non_snake_case)]
+                #vis fn #method_name(&self) -> (res: bool)
+                    ensures res == matches!(self.deep_view(), #spec_name::#variant_name { .. })
+                {
+                    match self {
+                        #pat => true,
+                        _ => false,
+                    }
+                }
+            }
+        })
+        .collect::<Vec<_>>();
+
     let span = item_enum.vis.span();
     let open_or_close = if let Visibility::Public(..) = item_enum.vis {
         quote_spanned! { span => open }
@@ -692,6 +727,10 @@ fn compile_enum(item_enum: &ItemEnum) -> Result<TokenStream2, Error> {
                     (_, _) => false
                 }
             }
+        }
+
+        impl #exec_name {
+            #(#is_variant_methods)*
         }
     })
 }
@@ -3043,8 +3082,72 @@ fn compile_expr(
 
         // TODOs:
         // Expr::Let(expr_let) => todo!(),
-        // Expr::Is(expr_is) => todo!(),
-        // Expr::IsNot(expr_is_not) => todo!(),
+
+        // `expr is Variant`: dispatched to a generated `exec_is_<Variant>`
+        // method on the Exec enum. For std types we don't compile (Option,
+        // Result), fall back to a `matches!` on the std variant directly.
+        Expr::Is(ExprIs { base, variant_ident, .. }) => {
+            let base_compiled = compile_expr(ctx, base, VarMode::Ref, unverified)?;
+            let owned = match variant_ident.to_string().as_str() {
+                "Some" => quote_spanned! { variant_ident.span() =>
+                    matches!(#base_compiled, Some(_))
+                },
+                "None" => quote_spanned! { variant_ident.span() =>
+                    matches!(#base_compiled, None)
+                },
+                "Ok" => quote_spanned! { variant_ident.span() =>
+                    matches!(#base_compiled, Ok(_))
+                },
+                "Err" => quote_spanned! { variant_ident.span() =>
+                    matches!(#base_compiled, Err(_))
+                },
+                _ => {
+                    let method = Ident::new(
+                        &format!("exec_is_{}", variant_ident),
+                        variant_ident.span(),
+                    );
+                    quote_spanned! { variant_ident.span() =>
+                        #base_compiled.#method()
+                    }
+                }
+            };
+            match mode {
+                VarMode::Ref => quote! { (#owned).get_ref() },
+                VarMode::Owned => owned,
+            }
+        }
+
+        // `expr isnt Variant`: negation of the above.
+        Expr::IsNot(ExprIsNot { base, variant_ident, .. }) => {
+            let base_compiled = compile_expr(ctx, base, VarMode::Ref, unverified)?;
+            let owned = match variant_ident.to_string().as_str() {
+                "Some" => quote_spanned! { variant_ident.span() =>
+                    !matches!(#base_compiled, Some(_))
+                },
+                "None" => quote_spanned! { variant_ident.span() =>
+                    !matches!(#base_compiled, None)
+                },
+                "Ok" => quote_spanned! { variant_ident.span() =>
+                    !matches!(#base_compiled, Ok(_))
+                },
+                "Err" => quote_spanned! { variant_ident.span() =>
+                    !matches!(#base_compiled, Err(_))
+                },
+                _ => {
+                    let method = Ident::new(
+                        &format!("exec_is_{}", variant_ident),
+                        variant_ident.span(),
+                    );
+                    quote_spanned! { variant_ident.span() =>
+                        !#base_compiled.#method()
+                    }
+                }
+            };
+            match mode {
+                VarMode::Ref => quote! { (#owned).get_ref() },
+                VarMode::Owned => owned,
+            }
+        }
 
         // Maybe TODOs:
         // Expr::Verbatim(token_stream) => todo!(),
@@ -3323,4 +3426,3 @@ pub fn exec_spec(input: TokenStream, unverified: bool) -> TokenStream {
         Err(err) => err,
     }
 }
-
