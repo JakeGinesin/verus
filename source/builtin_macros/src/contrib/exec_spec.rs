@@ -374,7 +374,7 @@ fn compile_struct(item_struct: &ItemStruct) -> Result<TokenStream2, Error> {
         #[verifier::ext_equal]
         #item_struct
 
-        #[derive(Eq, Hash, PartialEq)]
+        #[derive(Eq, Hash, PartialEq, Debug)]
         #vis struct #exec_name #exec_fields
 
         impl vstd::contrib::exec_spec::ExecSpecType for #spec_name {
@@ -676,7 +676,7 @@ fn compile_enum(item_enum: &ItemEnum) -> Result<TokenStream2, Error> {
         #[verifier::ext_equal]
         #item_enum
 
-        #[derive(Eq, Hash, PartialEq)]
+        #[derive(Eq, Hash, PartialEq, Debug)]
         #vis enum #exec_name {
             #(#exec_variants,)*
         }

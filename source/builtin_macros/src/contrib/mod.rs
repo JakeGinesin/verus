@@ -2,6 +2,7 @@ pub mod auto_spec;
 pub mod exec_spec;
 pub mod set_build;
 pub mod spec_derive;
+pub mod verus_pbt;
 
 use proc_macro2::TokenStream;
 use verus_syn::{Attribute, ImplItem, Item, Meta, Path};

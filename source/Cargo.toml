@@ -12,6 +12,7 @@ members = [
   "rust_verify_test",
   "rust_verify_test_macros",
   "state_machines_macros",
+  "verus_pbt_runtime",
   "verusdoc",
   "vstd_build",
   "tools/internals_interface",

@@ -631,6 +631,36 @@ pub fn exec_spec_unverified(input: proc_macro::TokenStream) -> proc_macro::Token
     contrib::exec_spec::exec_spec(input, true)
 }
 
+/// Property-based testing harness generator.
+///
+/// `verus_pbt_unverified! { ... }` accepts the same shape of items as
+/// `exec_spec_unverified!` (spec fns, structs, enums) plus regular `exec` fns
+/// with `requires`/`ensures` clauses. It emits:
+///
+///   1. The user's items unchanged so Verus still verifies the spec layer.
+///   2. An `exec_spec_unverified!` block compiling every spec fn / user type
+///      reachable from a contract.
+///   3. A `#[cfg(test)] #[verifier::external] mod __verus_pbt_<id> { ... }`
+///      containing one `proptest!` harness per contract-bearing exec fn.
+///
+/// The runtime trait used by the generated harnesses lives in the sibling
+/// `verus_pbt_runtime` crate, which consumers add to `[dev-dependencies]`.
+#[proc_macro]
+pub fn verus_pbt_unverified(
+    input: proc_macro::TokenStream,
+) -> proc_macro::TokenStream {
+    contrib::verus_pbt::expand(input, /*verified=*/ false)
+}
+
+/// Same as `verus_pbt_unverified!` but uses `exec_spec_verified!` for the
+/// engine block, which proves spec ≡ exec via SMT (narrower fragment).
+#[proc_macro]
+pub fn verus_pbt_verified(
+    input: proc_macro::TokenStream,
+) -> proc_macro::TokenStream {
+    contrib::verus_pbt::expand(input, /*verified=*/ true)
+}
+
 /// Automate generating spec types and their View/DeepView implementations
 /// https://github.com/verus-lang/verus/pull/1798
 #[proc_macro_attribute]
