@@ -17,3 +17,7 @@
 
 pub use verus_builtin_macros::verus_pbt_unverified;
 pub use verus_builtin_macros::verus_pbt_verified;
+
+/// Tier-4 trusted exec stub for spec fns defined outside the current `verus!`
+/// block. See [`verus_builtin_macros::external_pbt_provide`].
+pub use verus_builtin_macros::external_pbt_provide;

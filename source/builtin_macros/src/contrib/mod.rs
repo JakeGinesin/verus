@@ -1,5 +1,7 @@
 pub mod auto_spec;
 pub mod exec_spec;
+pub mod external_pbt_provide;
+pub mod pbt_attr;
 pub mod set_build;
 pub mod spec_derive;
 pub mod verus_pbt;
@@ -118,6 +120,10 @@ pub(crate) fn contrib_preprocess_impl_item(item: &mut ImplItem, new_items: &mut 
 }
 
 pub(crate) fn contrib_preprocess_items(items: &mut Vec<Item>) {
+    // Whole-block pass first: #[pbt_provide] needs sibling visibility to fold
+    // all marked types (and their inherent impls) into one engine block.
+    pbt_attr::pbt_provide_preprocess(items);
+
     let mut i = 0;
     while i < items.len() {
         let mut new_items: Vec<Item> = Vec::new();

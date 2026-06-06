@@ -329,3 +329,404 @@ test_verify_one_file! {
         }
     } => Ok(())
 }
+
+
+// ---------------------------------------------------------------------------
+// &self method support: contracts can live in `impl T` blocks, written
+// against the user's OWN type (no Exec* anywhere).
+// ---------------------------------------------------------------------------
+
+test_verify_one_file! {
+    // Fully idiomatic: spec fn + exec fn on the same user type `User`,
+    // referencing each other via `self.is_valid_spec()`. No Exec* in sight.
+    #[test] test_verus_pbt_idiomatic_self IMPORTS.to_string() + verus_code_str! {
+        verus_pbt_unverified! {
+            pub enum Permission { Read, Write, Admin, Revoked }
+
+            pub struct User {
+                pub name_len: usize,
+                pub perm: Permission,
+                pub quota: u64,
+            }
+
+            impl Permission {
+                pub open spec fn is_revoked(&self) -> bool {
+                    match self { Permission::Revoked => true, _ => false }
+                }
+            }
+
+            impl User {
+                pub open spec fn is_valid_spec(&self) -> bool {
+                    self.name_len > 0 && !self.perm.is_revoked()
+                }
+
+                #[verifier::external_body]
+                pub fn is_valid(&self) -> (b: bool)
+                    ensures b == self.is_valid_spec(),
+                {
+                    self.name_len > 0
+                }
+            }
+        }
+    } => Ok(())
+}
+
+test_verify_one_file! {
+    // A method on `ExecUser` with a `&self` receiver should still be
+    // harnessed (back-compat: explicit Exec* form is also accepted).
+    #[test] test_verus_pbt_self_receiver IMPORTS.to_string() + verus_code_str! {
+        verus_pbt_unverified! {
+            pub struct User {
+                pub name_len: usize,
+                pub quota: u64,
+            }
+
+            pub open spec fn user_ok(u: User) -> bool {
+                u.name_len > 0
+            }
+
+            impl ExecUser {
+                #[verifier::external_body]
+                pub fn is_valid(&self) -> (b: bool)
+                    ensures b == user_ok(self.deep_view()),
+                {
+                    self.name_len > 0
+                }
+            }
+        }
+    } => Ok(())
+}
+
+test_verify_one_file! {
+    // Mixed impl block: spec methods routed to engine, exec methods kept
+    // for passthrough + harness.
+    #[test] test_verus_pbt_mixed_impl IMPORTS.to_string() + verus_code_str! {
+        verus_pbt_unverified! {
+            pub struct Counter {
+                pub n: u32,
+            }
+
+            pub open spec fn small_spec(c: Counter) -> bool {
+                c.n <= 100
+            }
+
+            impl ExecCounter {
+                #[verifier::external_body]
+                pub fn check(&self) -> (b: bool)
+                    ensures b == small_spec(self.deep_view()),
+                {
+                    self.n <= 100
+                }
+            }
+        }
+    } => Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// Diagnostics for the split-across-files limitation. A verus_pbt block can
+// only see items between its own braces; referencing out-of-block types or
+// spec fns must produce a clear, actionable compile error.
+// ---------------------------------------------------------------------------
+
+// ---------------------------------------------------------------------------
+// Phase 1: #[pbt_provide] at the definition site (no separate macro block).
+// ---------------------------------------------------------------------------
+
+test_verify_one_file! {
+    // A single #[pbt_provide] struct: the marker is stripped, the type is
+    // folded into the engine block, and the spec layer still verifies.
+    #[test] test_verus_pbt_provide_struct IMPORTS.to_string() + verus_code_str! {
+        #[allow(unused_imports)] use vstd::contrib::verus_pbt::*;
+
+        #[pbt_provide]
+        pub struct Point {
+            pub x: i64,
+            pub y: i64,
+        }
+
+        impl Point {
+            pub open spec fn on_diag(&self) -> bool { self.x == self.y }
+        }
+    } => Ok(())
+}
+
+test_verify_one_file! {
+    // Two #[pbt_provide] types where one references the other as a field.
+    // They must be folded into ONE engine block so the cross-type reference
+    // (User.perm: Permission) compiles.
+    #[test] test_verus_pbt_provide_cross_type IMPORTS.to_string() + verus_code_str! {
+        #[allow(unused_imports)] use vstd::contrib::verus_pbt::*;
+
+        #[pbt_provide]
+        pub enum Permission { Read, Revoked }
+
+        #[pbt_provide]
+        pub struct User {
+            pub name_len: usize,
+            pub perm: Permission,
+        }
+
+        impl Permission {
+            pub open spec fn is_revoked(&self) -> bool {
+                match self { Permission::Revoked => true, _ => false }
+            }
+        }
+
+        impl User {
+            pub open spec fn is_valid_spec(&self) -> bool {
+                self.name_len > 0 && !self.perm.is_revoked()
+            }
+        }
+    } => Ok(())
+}
+
+test_verify_one_file! {
+    // #[pbt_provide] interleaved with ordinary (non-provided) items: the
+    // ordinary items must pass through untouched. A spec fn the provided
+    // type's method calls is itself marked #[pbt_provide] so its exec
+    // companion is generated in the same block.
+    #[test] test_verus_pbt_provide_interleaved IMPORTS.to_string() + verus_code_str! {
+        #[allow(unused_imports)] use vstd::contrib::verus_pbt::*;
+
+        #[pbt_provide]
+        pub open spec fn helper(n: u64) -> bool { n > 0 }
+
+        #[pbt_provide]
+        pub struct Wrapper { pub n: u64 }
+
+        impl Wrapper {
+            pub open spec fn ok(&self) -> bool { helper(self.n) }
+        }
+
+        pub fn ordinary(n: u64) -> (r: u64)
+            ensures r == n,
+        { n }
+    } => Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// Phase 2: #[pbt] on an exec fn, with sibling-closure analysis. The user adds
+// only `#[pbt]`; the pass folds the reachable spec/type closure into one
+// engine block and generates the harness.
+// ---------------------------------------------------------------------------
+
+test_verify_one_file! {
+    // Method form: `#[pbt]` on `is_valid`, which references `is_valid_spec`,
+    // which references `Permission::is_revoked`. The closure must pull in
+    // `User`, `Permission`, and both spec methods — with no other annotation.
+    #[test] test_verus_pbt_attr_method_closure IMPORTS.to_string() + verus_code_str! {
+        #[allow(unused_imports)] use vstd::contrib::verus_pbt::*;
+
+        pub enum Permission { Read, Revoked }
+
+        pub struct User {
+            pub name_len: usize,
+            pub perm: Permission,
+        }
+
+        impl Permission {
+            pub open spec fn is_revoked(&self) -> bool {
+                match self { Permission::Revoked => true, _ => false }
+            }
+        }
+
+        impl User {
+            pub open spec fn is_valid_spec(&self) -> bool {
+                self.name_len > 0 && !self.perm.is_revoked()
+            }
+
+            #[pbt]
+            #[verifier::external_body]
+            pub fn is_valid(&self) -> (b: bool)
+                ensures b == self.is_valid_spec(),
+            {
+                self.name_len > 0 && !matches!(self.perm, Permission::Revoked)
+            }
+        }
+    } => Ok(())
+}
+
+test_verify_one_file! {
+    // Free-fn form: `#[pbt]` on a free fn whose contract calls a sibling
+    // spec fn. Closure pulls in the spec fn only.
+    #[test] test_verus_pbt_attr_free_fn IMPORTS.to_string() + verus_code_str! {
+        #[allow(unused_imports)] use vstd::contrib::verus_pbt::*;
+
+        pub open spec fn is_small_spec(n: u32) -> bool { n <= 100 }
+
+        #[pbt]
+        fn clamp(n: u32) -> (r: u32)
+            ensures is_small_spec(r),
+        {
+            if n <= 100 { n } else { 100 }
+        }
+    } => Ok(())
+}
+
+test_verify_one_file! {
+    // Mixing `#[pbt]` with ordinary items the closure must NOT pull in. The
+    // unrelated spec fn `unrelated` and exec fn `other` stay outside the
+    // engine block (they aren't reachable from the contract).
+    #[test] test_verus_pbt_attr_selective_closure IMPORTS.to_string() + verus_code_str! {
+        #[allow(unused_imports)] use vstd::contrib::verus_pbt::*;
+
+        pub open spec fn reachable_spec(n: u32) -> bool { n < 50 }
+        pub open spec fn unrelated(n: u32) -> bool { n > 999 }
+
+        #[pbt]
+        fn capped(n: u32) -> (r: u32)
+            ensures reachable_spec(r),
+        {
+            if n < 50 { n } else { 49 }
+        }
+
+        pub fn other(x: u32) -> (r: u32)
+            ensures r == x,
+        { x }
+    } => Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// Phase 4: robustness — markers must never leak to rustc as unknown attrs.
+// ---------------------------------------------------------------------------
+
+test_verify_one_file! {
+    // `#[pbt]` on a contract-less fn: no harness to generate, but the marker
+    // must be stripped (not leak as an unknown attribute) and the fn must
+    // still verify.
+    #[test] test_verus_pbt_marker_no_contract IMPORTS.to_string() + verus_code_str! {
+        #[allow(unused_imports)] use vstd::contrib::verus_pbt::*;
+
+        #[pbt]
+        pub fn identity(n: u32) -> (r: u32)
+            ensures r == n,
+        { n }
+    } => Ok(())
+}
+
+test_verify_one_file! {
+    // A `#[pbt_provide]` type with no contract-bearing exec fn anywhere:
+    // marker stripped, companions generated, spec layer verifies.
+    #[test] test_verus_pbt_provide_only IMPORTS.to_string() + verus_code_str! {
+        #[allow(unused_imports)] use vstd::contrib::verus_pbt::*;
+
+        #[pbt_provide]
+        pub struct Gauge { pub level: u32 }
+
+        impl Gauge {
+            pub open spec fn in_range(&self) -> bool { self.level <= 1000 }
+        }
+    } => Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// Step 1: tier-aware diagnostic for external spec fns. A `#[pbt]` contract that
+// calls a free spec fn defined OUTSIDE the block (no sibling, not built-in)
+// cannot get an exec companion; the pass must emit an actionable error rather
+// than letting the engine produce a broken `exec_<name>(..)` call.
+// ---------------------------------------------------------------------------
+
+test_verify_one_file! {
+    // The contract calls `external_pred`, which is not defined in this block.
+    // Expect the tier-aware diagnostic, not a raw "cannot find exec_external_pred".
+    #[test] test_verus_pbt_external_spec_fn_diagnostic IMPORTS.to_string() + verus_code_str! {
+        #[allow(unused_imports)] use vstd::contrib::verus_pbt::*;
+
+        #[pbt]
+        fn clamp(n: u32) -> (r: u32)
+            ensures external_pred(r),
+        {
+            if n <= 100 { n } else { 100 }
+        }
+    } => Err(err) => assert_any_vir_error_msg(err, "is used in a `#[pbt]` contract but is")
+}
+
+test_verify_one_file! {
+    // Path inference: a `use` brings `is_sorted` into scope from another
+    // module; the diagnostic should mention the inferred path so the
+    // `external_pbt_provide!`/`pbt-gen` suggestion points at the real location.
+    #[test] test_verus_pbt_external_spec_fn_path_inferred IMPORTS.to_string() + verus_code_str! {
+        #[allow(unused_imports)] use vstd::contrib::verus_pbt::*;
+        use crate::seqlib::is_sorted;
+
+        #[pbt]
+        fn sort_it(s: &[i64]) -> (r: bool)
+            ensures r == is_sorted(s.deep_view()),
+        {
+            let _ = s;
+            true
+        }
+    } => Err(err) => assert_any_vir_error_msg(err, "crate::seqlib::is_sorted")
+}
+
+// ---------------------------------------------------------------------------
+// Step 2: external_pbt_provide! (Tier 4 trusted stub). A `#[pbt]` contract may
+// call a spec fn that is NOT defined in-block as long as a trusted exec stub is
+// supplied via external_pbt_provide! in the same block. The Step-1 diagnostic
+// must be suppressed and the spec layer must still verify.
+// ---------------------------------------------------------------------------
+
+test_verify_one_file! {
+    // `is_small_ext` is provided as a trusted stub; the contract calls it.
+    // No sibling spec fn defines it, yet the block verifies (no diagnostic).
+    #[test] test_verus_pbt_external_provide_basic IMPORTS.to_string() + verus_code_str! {
+        #[allow(unused_imports)] use vstd::contrib::verus_pbt::*;
+
+        // The spec fn lives in another module (mimicking another crate). The
+        // #[pbt] block imports it; its exec companion is supplied by
+        // external_pbt_provide! rather than generated in-block.
+        mod ext {
+            use vstd::prelude::*;
+            verus! {
+                pub open spec fn is_small_ext(n: u32) -> bool { n <= 100 }
+            }
+        }
+
+        use ext::is_small_ext;
+
+        external_pbt_provide! {
+            fn is_small_ext(n: u32) -> bool {
+                n <= 100
+            }
+        }
+
+        #[pbt]
+        fn clamp(n: u32) -> (r: u32)
+            ensures is_small_ext(r),
+        {
+            if n <= 100 { n } else { 100 }
+        }
+    } => Ok(())
+}
+
+test_verify_one_file! {
+    // A provided stub over a Seq parameter (lowered to &[i64] in the
+    // companion). Verifies the spec layer is untouched and the diagnostic is
+    // suppressed.
+    #[test] test_verus_pbt_external_provide_seq IMPORTS.to_string() + verus_code_str! {
+        #[allow(unused_imports)] use vstd::contrib::verus_pbt::*;
+
+        mod ext {
+            use vstd::prelude::*;
+            verus! {
+                pub open spec fn nonempty_ext(s: Seq<i64>) -> bool { s.len() > 0 }
+            }
+        }
+
+        use ext::nonempty_ext;
+
+        external_pbt_provide! {
+            fn nonempty_ext(s: Seq<i64>) -> bool {
+                !s.is_empty()
+            }
+        }
+
+        #[pbt]
+        fn first_or_zero(s: &[i64]) -> (r: i64)
+            requires nonempty_ext(s.deep_view()),
+            ensures r == s.deep_view()[0],
+        {
+            s[0]
+        }
+    } => Ok(())
+}

@@ -29,6 +29,19 @@ pub const DEFAULT_COLLECTION_MAX: usize = 16;
 /// Bridge trait between `verus_pbt_*` harnesses and `proptest`. For every
 /// parameter type appearing in a contract-bearing exec fn, the macro emits
 /// `pbt_strategy::<T>()` and asks proptest to produce values of `T`.
+///
+/// The `on_unimplemented` message turns the common cross-file mistake —
+/// referencing a type whose definition was never marked `#[pbt_provide]` —
+/// into a localized, actionable compiler error at the harness call site.
+#[diagnostic::on_unimplemented(
+    message = "`{Self}` is not set up for property-based testing",
+    label = "no `PbtStrategy` for `{Self}`",
+    note = "add `#[pbt_provide]` to the definition of `{Self}` (and its spec fns) so \
+            verus_pbt can generate a proptest strategy and exec companion for it",
+    note = "if `{Self}` is defined in this same `verus!` block as the `#[pbt]` function, \
+            this is generated automatically; across files/modules each type must be \
+            marked `#[pbt_provide]` at its own definition site"
+)]
 pub trait PbtStrategy: Sized {
     /// Concrete strategy returned by [`PbtStrategy::pbt_strategy`].
     type Strategy: Strategy<Value = Self>;
@@ -40,6 +53,46 @@ pub trait PbtStrategy: Sized {
 /// Convenience function used by the macro-generated harnesses.
 pub fn pbt_strategy<T: PbtStrategy>() -> T::Strategy {
     T::pbt_strategy()
+}
+
+/// Converts a sampled value of a user's spec-side type into the engine's
+/// `Exec*` model, so the harness can feed it to the generated `exec_*` spec
+/// companions. Generated at the type's `#[pbt_provide]` site; resolved by
+/// trait lookup across files (the key to the cross-file design — see the
+/// crate docs).
+#[diagnostic::on_unimplemented(
+    message = "`{Self}` has no exec model for property-based testing",
+    label = "no `ToExecModel` for `{Self}`",
+    note = "add `#[pbt_provide]` to the definition of `{Self}` so verus_pbt can generate \
+            its exec-model conversion"
+)]
+pub trait ToExecModel {
+    /// The engine's `Exec*` companion type for `Self`.
+    type Exec;
+    /// Structurally convert `&self` into its `Exec*` model.
+    fn to_exec_model(&self) -> Self::Exec;
+}
+
+/// Marker that a user type's spec fns have runnable companions available.
+/// The harness rewrites a spec call `x.foo_spec()` into a call through this
+/// trait; if the type was never `#[pbt_provide]`'d, the missing impl produces
+/// a tailored error rather than a raw "method not found".
+///
+/// The actual companions are inherent `*_exec` methods generated at the
+/// `#[pbt_provide]` site; this trait exists so a missing provider is reported
+/// as a clear trait-bound error. The harness emits a
+/// `let _: () = <T as PbtSpecCompanion>::ASSERT_PROVIDED;`-style touch when it
+/// calls a spec companion, so the diagnostic fires.
+#[diagnostic::on_unimplemented(
+    message = "the spec fns of `{Self}` have no runnable companions for property-based testing",
+    label = "no `PbtSpecCompanion` for `{Self}`",
+    note = "add `#[pbt_provide]` to the definition of `{Self}` (and its spec fns) so \
+            verus_pbt can generate runnable companions used to evaluate contracts"
+)]
+pub trait PbtSpecCompanion {
+    /// Touchpoint the harness references to force the `on_unimplemented`
+    /// diagnostic when a spec companion is used on an unprovided type.
+    const PROVIDED: () = ();
 }
 
 macro_rules! impl_primitive {

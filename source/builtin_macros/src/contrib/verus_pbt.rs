@@ -58,7 +58,7 @@ impl Parse for PbtItems {
     }
 }
 
-/// Either a struct or enum the user defined; carried with us so we can emit
+/// Either or enum the user defined; carried with us so we can emit
 /// strategy impls.
 #[derive(Clone)]
 enum UserType {
@@ -76,6 +76,18 @@ impl UserType {
     }
 }
 
+/// A contract-bearing function we need to emit a harness for. Free fns and
+/// `&self`-receiver methods on user-defined `Exec*` types are both supported.
+#[derive(Clone)]
+enum ContractTarget {
+    /// A free `fn` with at least one of `requires` / `ensures`.
+    FreeFn(ItemFn),
+    /// A method on an `Exec*` type with at least one of `requires` /
+    /// `ensures`. Carries the impl's Self ident (e.g. `ExecUser`) so the
+    /// harness can call `super::ExecUser::method(&u, ...)`.
+    Method { self_ty: Ident, method: verus_syn::ImplItemFn },
+}
+
 /// Result of classifying the macro's input items.
 struct Classified {
     /// Items the user wrote, passed through verus! verbatim.
@@ -88,8 +100,28 @@ struct Classified {
     user_types: Vec<UserType>,
     /// Set of user-defined type names (faster lookups during type analysis).
     user_type_names: HashSet<String>,
-    /// Exec fns with `requires` or `ensures` clauses that need a harness.
-    contract_fns: Vec<ItemFn>,
+    /// Contract-bearing fns / methods that need a harness.
+    contract_targets: Vec<ContractTarget>,
+    /// Token bodies of `external_pbt_provide!` invocations (Tier 4 trusted
+    /// stubs). Their `exec_<name>` companions are emitted into the harness
+    /// module so harness calls `exec_<name>(..)` resolve.
+    external_provide_bodies: Vec<TokenStream2>,
+}
+
+/// Lenient match for the `external_pbt_provide` macro path: bare,
+/// `contrib::`-, or `vstd::contrib::`-qualified.
+fn macro_path_is_external_provide(path: &verus_syn::Path) -> bool {
+    if path.leading_colon.is_some() {
+        return false;
+    }
+    let segs: Vec<String> = path.segments.iter().map(|s| s.ident.to_string()).collect();
+    let segs: Vec<&str> = segs.iter().map(|s| s.as_str()).collect();
+    matches!(
+        &segs[..],
+        ["external_pbt_provide"]
+            | ["contrib", "external_pbt_provide"]
+            | ["vstd", "contrib", "external_pbt_provide"]
+    )
 }
 
 fn classify(items: Vec<Item>) -> Classified {
@@ -98,7 +130,8 @@ fn classify(items: Vec<Item>) -> Classified {
     let mut spec_fn_names = HashSet::new();
     let mut user_types = Vec::new();
     let mut user_type_names = HashSet::new();
-    let mut contract_fns = Vec::new();
+    let mut contract_targets: Vec<ContractTarget> = Vec::new();
+    let mut external_provide_bodies: Vec<TokenStream2> = Vec::new();
 
     for item in items {
         match &item {
@@ -111,7 +144,7 @@ fn classify(items: Vec<Item>) -> Classified {
                     let has_contract = item_fn.sig.spec.requires.is_some()
                         || item_fn.sig.spec.ensures.is_some();
                     if has_contract {
-                        contract_fns.push(item_fn.clone());
+                        contract_targets.push(ContractTarget::FreeFn(item_fn.clone()));
                     }
                     passthrough_items.push(item);
                 }
@@ -130,26 +163,81 @@ fn classify(items: Vec<Item>) -> Classified {
                 engine_items.push(item);
             }
             Item::Impl(item_impl) => {
-                // Spec-only inherent impls are sent to the engine; it
-                // produces `Exec*::exec_method` analogues. Mixed impls (some
-                // spec methods, some exec methods) aren't supported by the
-                // engine, so we route to passthrough instead.
-                if is_spec_only_impl(item_impl) {
-                    // Also record any spec methods so the contract rewriter
-                    // recognises them in `x.method(...)` calls (Phase 3+).
-                    for ii in &item_impl.items {
-                        if let verus_syn::ImplItem::Fn(impl_fn) = ii {
+                // Three cases:
+                //   1. All spec methods → route the whole impl to the engine.
+                //   2. All exec methods → passthrough; harvest contracts.
+                //   3. Mixed → split into two impl blocks.
+                let self_ty_ident = impl_self_ty_ident(item_impl);
+                let mut spec_methods: Vec<verus_syn::ImplItem> = Vec::new();
+                let mut exec_methods: Vec<verus_syn::ImplItem> = Vec::new();
+                let mut other_items: Vec<verus_syn::ImplItem> = Vec::new();
+                for ii in &item_impl.items {
+                    match ii {
+                        verus_syn::ImplItem::Fn(impl_fn) => {
                             if matches!(impl_fn.sig.mode, FnMode::Spec(..)) {
                                 spec_fn_names.insert(impl_fn.sig.ident.to_string());
+                                spec_methods.push(ii.clone());
+                            } else if matches!(impl_fn.sig.mode, FnMode::Default) {
+                                exec_methods.push(ii.clone());
+                                let has_contract = impl_fn.sig.spec.requires.is_some()
+                                    || impl_fn.sig.spec.ensures.is_some();
+                                if has_contract {
+                                    if let Some(self_ty) = self_ty_ident.clone() {
+                                        contract_targets.push(ContractTarget::Method {
+                                            self_ty,
+                                            method: impl_fn.clone(),
+                                        });
+                                    }
+                                    // If we can't resolve Self type, the
+                                    // method still goes into passthrough but
+                                    // isn't harnessed (we lack a strategy).
+                                }
+                            } else {
+                                other_items.push(ii.clone());
                             }
                         }
+                        _ => other_items.push(ii.clone()),
                     }
+                }
+
+                let make_impl_with = |items: Vec<verus_syn::ImplItem>| -> ItemImpl {
+                    let mut new_impl = item_impl.clone();
+                    new_impl.items = items;
+                    new_impl
+                };
+
+                if !spec_methods.is_empty() && exec_methods.is_empty() && other_items.is_empty() {
+                    // Pure spec impl → engine.
                     engine_items.push(item);
-                } else {
+                } else if spec_methods.is_empty() {
+                    // Pure exec / other impl → passthrough.
                     passthrough_items.push(item);
+                } else {
+                    // Mixed: split.
+                    let spec_only = make_impl_with(spec_methods);
+                    let mut others = exec_methods;
+                    others.extend(other_items);
+                    let exec_only = make_impl_with(others);
+                    engine_items.push(Item::Impl(spec_only));
+                    passthrough_items.push(Item::Impl(exec_only));
                 }
             }
             _ => {
+                // external_pbt_provide! { ... }: register the provided names
+                // as spec fns (so contract calls `f(..)` rename to
+                // `exec_f(..)`) and stash the body for companion emission. The
+                // macro item itself does not pass through to verus!.
+                if let Item::Macro(m) = &item {
+                    if macro_path_is_external_provide(&m.mac.path) {
+                        for n in
+                            crate::contrib::external_pbt_provide::provided_names(m.mac.tokens.clone())
+                        {
+                            spec_fn_names.insert(n);
+                        }
+                        external_provide_bodies.push(m.mac.tokens.clone());
+                        continue;
+                    }
+                }
                 passthrough_items.push(item);
             }
         }
@@ -161,20 +249,23 @@ fn classify(items: Vec<Item>) -> Classified {
         spec_fn_names,
         user_types,
         user_type_names,
-        contract_fns,
+        contract_targets,
+        external_provide_bodies,
     }
 }
 
-fn is_spec_only_impl(item_impl: &ItemImpl) -> bool {
-    if item_impl.items.is_empty() {
-        return false;
+fn impl_self_ty_ident(item_impl: &ItemImpl) -> Option<Ident> {    if item_impl.trait_.is_some() {
+        return None;
     }
-    item_impl.items.iter().all(|ii| match ii {
-        verus_syn::ImplItem::Fn(f) => matches!(f.sig.mode, FnMode::Spec(..)),
-        // Non-fn impl items are leaved alone; we treat the impl as not
-        // engine-eligible if anything but spec fns appears.
-        _ => false,
-    })
+    if let Type::Path(tp) = item_impl.self_ty.as_ref() {
+        if tp.qself.is_none() && tp.path.segments.len() == 1 {
+            let seg = &tp.path.segments[0];
+            if matches!(seg.arguments, PathArguments::None) {
+                return Some(seg.ident.clone());
+            }
+        }
+    }
+    None
 }
 
 // ---------------------------------------------------------------------------
@@ -219,13 +310,13 @@ enum ParamElem {
 }
 
 impl ParamElem {
+    /// The type the harness samples for this element. For user types we
+    /// sample the user's OWN type (e.g. `User`), not the engine's `ExecUser`,
+    /// so the user never has to mention `Exec*`.
     fn harness_type(&self) -> TokenStream2 {
         match self {
             ParamElem::Primitive(ty) => quote! { #ty },
-            ParamElem::UserType(name) => {
-                let exec = format_ident!("Exec{}", name);
-                quote! { #exec }
-            }
+            ParamElem::UserType(name) => quote! { #name },
         }
     }
 }
@@ -259,8 +350,8 @@ impl ParamShape {
                 quote! { ::std::collections::HashMap<#inner, usize> }
             }
             ParamShape::RefUserType(name) | ParamShape::OwnedUserType(name) => {
-                let exec_name = format_ident!("Exec{}", name);
-                quote! { #exec_name }
+                // Sample the user's OWN type, not Exec*.
+                quote! { #name }
             }
         }
     }
@@ -277,14 +368,16 @@ impl ParamShape {
             ParamShape::OwnedMultiset(_) => quote! {
                 ::vstd::contrib::exec_spec::ExecMultiset { m: #harness_ident.clone() }
             },
+            // The user's exec fn takes their OWN type (`&User` / `User`).
             ParamShape::RefUserType(_) => quote! { &#harness_ident },
-            ParamShape::OwnedUserType(_) => quote! { #harness_ident.deep_clone() },
+            ParamShape::OwnedUserType(_) => quote! { #harness_ident.clone() },
         }
     }
 
-    /// What does `<param>.deep_view()` become in a contract clause? This is
-    /// the value the harness should pass to `exec_*` spec fns, which take
-    /// the *Ref* / borrowed exec form.
+    /// What does `<param>.deep_view()` (or `*self` for a method receiver)
+    /// become in a contract clause? The result is the `Exec*` value the
+    /// `exec_*` spec fns expect. For user types we convert via the generated
+    /// `__pbt_to_exec_*` fn.
     fn call_form_for_deep_view(&self, harness_ident: &Ident) -> TokenStream2 {
         match self {
             ParamShape::Primitive(_) => quote! { #harness_ident },
@@ -296,8 +389,16 @@ impl ParamShape {
             ParamShape::OwnedMultiset(_) => quote! {
                 &::vstd::contrib::exec_spec::ExecMultiset { m: #harness_ident.clone() }
             },
-            ParamShape::RefUserType(_) => quote! { &#harness_ident },
-            ParamShape::OwnedUserType(_) => quote! { &#harness_ident },
+            ParamShape::RefUserType(name) | ParamShape::OwnedUserType(name) => {
+                // Fully-qualified trait call so it (a) resolves across files
+                // by trait lookup and (b) triggers the ToExecModel
+                // `on_unimplemented` diagnostic if the type was never
+                // `#[pbt_provide]`'d. (Method syntax `x.to_exec_model()`
+                // would yield a generic E0599 instead.)
+                quote! {
+                    &<#name as ::verus_pbt_runtime::ToExecModel>::to_exec_model(&#harness_ident)
+                }
+            }
         }
     }
 
@@ -352,6 +453,11 @@ impl ParamShape {
     }
 }
 
+/// Name of the generated `User -> ExecUser` converter fn for a user type.
+fn to_exec_fn_name(user_ty: &Ident) -> Ident {
+    format_ident!("__pbt_to_exec_{}", user_ty)
+}
+
 /// Strip a leading `Exec` from a name. Returns the original name if the
 /// stripped name corresponds to a user-defined type. Used by the classifier
 /// to recognise `&ExecPair` / `ExecPair` parameter types and route them
@@ -381,6 +487,18 @@ fn classify_param_elem(ty: &Type, user_types: &HashSet<String>) -> Result<ParamE
             }
             if is_primitive_like(&name) {
                 return Ok(ParamElem::Primitive(ty.clone()));
+            }
+            // A capitalized single-segment name we don't recognise is treated
+            // as an EXTERNAL user type: one defined (and `#[pbt_provide]`'d) in
+            // another module/file. We don't need its definition here — the
+            // generated strategy uses `<Name as PbtStrategy>` and the
+            // converter uses `<Name as ToExecModel>`, both resolved by trait
+            // lookup across files. If the type was never provided, the
+            // `on_unimplemented` diagnostic fires at the harness.
+            if matches!(seg.arguments, PathArguments::None)
+                && name.chars().next().is_some_and(|c| c.is_uppercase())
+            {
+                return Ok(ParamElem::UserType(seg.ident.clone()));
             }
         }
     }
@@ -415,6 +533,28 @@ fn classify_param_type(ty: &Type, user_types: &HashSet<String>) -> Result<ParamS
                                 seg.ident.span(),
                             )));
                         }
+                    }
+                }
+            }
+            // A capitalized single-segment ref type that we don't recognise
+            // is most likely a user-defined type living in another module.
+            if let Type::Path(tp) = type_ref.elem.as_ref() {
+                if tp.qself.is_none() && tp.path.segments.len() == 1 {
+                    let seg = &tp.path.segments[0];
+                    let name = seg.ident.to_string();
+                    if name.chars().next().is_some_and(|c| c.is_uppercase()) {
+                        return Err(Error::new_spanned(
+                            ty,
+                            format!(
+                                "verus_pbt: `&{name}` refers to a type that is not defined \
+                                 inside this verus_pbt_unverified! block.\n\n\
+                                 The macro can only build a proptest strategy for types it can \
+                                 see between its own braces; it cannot reach a `struct`/`enum` \
+                                 declared in another module or file. Move `{name}` (and the \
+                                 spec fns its contract uses) into this block to test against it.",
+                                name = name
+                            ),
+                        ));
                     }
                 }
             }
@@ -628,6 +768,11 @@ struct ContractRewriter<'a> {
     spec_fn_names: &'a HashSet<String>,
     /// Per parameter: how `<param>.deep_view()` translates at the call site.
     param_call_form: &'a HashMap<String, TokenStream2>,
+    /// Idents whose value is a user-defined type at the harness level (the
+    /// user's OWN type, e.g. `User`). Maps ident-name → user type name. Used
+    /// to insert `__pbt_to_exec_T(&x)` conversions before spec-fn / spec-
+    /// method calls that expect the engine `Exec*` form.
+    user_typed_idents: &'a HashMap<String, Ident>,
     return_ident: Option<Ident>,
     return_shape: ReturnShape,
 }
@@ -675,6 +820,7 @@ impl<'a> VisitMut for ContractRewriter<'a> {
         }
 
         // 2. Rename `f(args)` to `exec_f(args)` when `f` is a known spec fn.
+        // If an argument is a bare user-typed ident, insert the conversion.
         if let Expr::Call(call) = expr {
             if let Expr::Path(ExprPath { path, qself: None, .. }) = call.func.as_mut() {
                 if path.segments.len() == 1 {
@@ -682,17 +828,44 @@ impl<'a> VisitMut for ContractRewriter<'a> {
                     let name = seg.ident.to_string();
                     if self.spec_fn_names.contains(&name) {
                         seg.ident = format_ident!("exec_{}", seg.ident);
+                        // Convert any bare user-typed argument: `f(u)` where
+                        // `u: User` → `exec_f(&__pbt_to_exec_User(&u))`.
+                        for arg in call.args.iter_mut() {
+                            self.convert_user_arg(arg);
+                        }
                     }
                 }
             }
         }
 
-        // 3. Rename `x.f(args)` to `x.exec_f(args)` when `f` is a known spec
-        // method. The engine's `compile_impl` emits `exec_f` on the `Exec*`
-        // type; the harness binding x is already an `Exec*` value.
+        // 3. Spec-method call on a user-typed receiver. We route it through
+        // the engine companion: `u.f(..)` →
+        // `<U as ToExecModel>::to_exec_model(&u).exec_f(..)`. This works for
+        // both in-block spec methods and EXTERNAL ones (defined + provided in
+        // another file), since `exec_f` is generated on the `Exec*` type at
+        // its `#[pbt_provide]` site and reached by path.
         if let Expr::MethodCall(mc) = expr {
             let name = mc.method.to_string();
-            if self.spec_fn_names.contains(&name) {
+            let recv_user_ty = ident_of_expr(&mc.receiver)
+                .and_then(|n| self.user_typed_idents.get(&n).cloned());
+
+            if let Some(user_ty) = recv_user_ty {
+                // Receiver is a user-typed ident: always treat the call as a
+                // spec-companion call (unknown methods on a sampled user value
+                // can only be spec companions in this context).
+                if !is_known_runtime_method(&name) {
+                    mc.method = format_ident!("exec_{}", mc.method);
+                    let recv_name = ident_of_expr(&mc.receiver).unwrap();
+                    let recv_id = format_ident!("{}", recv_name);
+                    let new_recv: Expr = verus_syn::parse_quote! {
+                        <#user_ty as ::verus_pbt_runtime::ToExecModel>::to_exec_model(&#recv_id)
+                    };
+                    *mc.receiver = new_recv;
+                }
+            } else if self.spec_fn_names.contains(&name) {
+                // Receiver isn't a tracked user-typed ident, but the method is
+                // a known in-block spec fn (e.g. chained `x.perm.is_revoked()`
+                // where `x.perm` is already an Exec value): just rename.
                 mc.method = format_ident!("exec_{}", mc.method);
             }
         }
@@ -700,6 +873,25 @@ impl<'a> VisitMut for ContractRewriter<'a> {
 }
 
 impl<'a> ContractRewriter<'a> {
+    /// If `arg` is a bare user-typed ident `u` (or `*u`), replace it with
+    /// `&__pbt_to_exec_User(&u)` so it can be passed to an `exec_*` spec fn
+    /// (which takes the borrowed engine form).
+    fn convert_user_arg(&self, arg: &mut Expr) {
+        // Unwrap a single deref: `*p` where `p: &User`.
+        let inner: &Expr = match &*arg {
+            Expr::Unary(u) if matches!(u.op, verus_syn::UnOp::Deref(_)) => u.expr.as_ref(),
+            other => other,
+        };
+        if let Some(name) = ident_of_expr(inner) {
+            if let Some(user_ty) = self.user_typed_idents.get(&name) {
+                let id = format_ident!("{}", name);
+                *arg = verus_syn::parse_quote! {
+                    &<#user_ty as ::verus_pbt_runtime::ToExecModel>::to_exec_model(&#id)
+                };
+            }
+        }
+    }
+
     fn rewrite_return_deep_view(&self, ret_ident: Ident) -> Expr {
         match &self.return_shape {
             ReturnShape::OwnedVec(_) => {
@@ -902,6 +1094,136 @@ fn collect_free_idents(expr: &Expr, exclude_built_ins: bool) -> Vec<String> {
     c.free
 }
 
+/// Walk a contract clause and detect references the macro definitely cannot
+/// turn into a runnable form. Returns a descriptive error if found.
+///
+/// NOTE (Phase 3): method calls on user-typed receivers are no longer flagged
+/// here. They are now always lowered to `<T as ToExecModel>::to_exec_model(..)
+/// .exec_<m>()`, which resolves across files by trait/path. If the type was
+/// never `#[pbt_provide]`'d, the `on_unimplemented` diagnostics on
+/// `ToExecModel` / `PbtSpecCompanion` fire at the harness call site — a
+/// better, localized error than a macro-time guess. This function is retained
+/// as a hook for future high-confidence checks; currently it accepts
+/// everything.
+fn check_clause_resolvable(
+    _clause: &Expr,
+    _spec_fn_names: &HashSet<String>,
+    _user_typed_idents: &HashMap<String, Ident>,
+    _self_ident: Option<&Ident>,
+) -> Result<(), Error> {
+    Ok(())
+}
+
+#[allow(dead_code)]
+fn check_clause_resolvable_unused(
+    clause: &Expr,
+    spec_fn_names: &HashSet<String>,
+    user_typed_idents: &HashMap<String, Ident>,
+    self_ident: Option<&Ident>,
+) -> Result<(), Error> {
+    struct Checker<'a> {
+        spec_fn_names: &'a HashSet<String>,
+        user_typed_idents: &'a HashMap<String, Ident>,
+        self_ident: Option<&'a Ident>,
+        error: Option<Error>,
+    }
+    impl<'a> Checker<'a> {
+        fn receiver_is_user_typed(&self, recv: &Expr) -> bool {
+            if let Some(name) = ident_of_expr(recv) {
+                if self.user_typed_idents.contains_key(&name) {
+                    return true;
+                }
+                if let Some(s) = self.self_ident {
+                    if name == s.to_string() {
+                        return true;
+                    }
+                }
+            }
+            false
+        }
+    }
+    impl<'ast, 'a> Visit<'ast> for Checker<'a> {
+        fn visit_expr_method_call(&mut self, mc: &'ast verus_syn::ExprMethodCall) {
+            let method = mc.method.to_string();
+            if self.error.is_none()
+                && self.receiver_is_user_typed(&mc.receiver)
+                && !self.spec_fn_names.contains(&method)
+                && !is_known_runtime_method(&method)
+            {
+                self.error = Some(Error::new_spanned(
+                    &mc.method,
+                    format!(
+                        "verus_pbt: the contract calls `.{method}(...)`, but `{method}` is \
+                         not a spec fn defined inside this verus_pbt_unverified! block.\n\n\
+                         The harness needs a runnable companion (`exec_{method}`) to evaluate \
+                         this clause, and the macro can only generate one for spec fns it can \
+                         see between its own braces. If `{method}` is defined in another module \
+                         or file, the macro cannot reach it.\n\n\
+                         Fix: move the spec fn `{method}` (and any types/spec fns it depends on) \
+                         into this same `verus_pbt_unverified! {{ ... }}` block.",
+                        method = method
+                    ),
+                ));
+            }
+            verus_syn::visit::visit_expr_method_call(self, mc);
+        }
+    }
+    let mut c = Checker {
+        spec_fn_names,
+        user_typed_idents,
+        self_ident,
+        error: None,
+    };
+    c.visit_expr(clause);
+    match c.error {
+        Some(e) => Err(e),
+        None => Ok(()),
+    }
+}
+
+/// Methods the engine / runtime knows how to compile on exec values. These
+/// are NOT spec fns the user defined, so they must not be flagged as
+/// "unresolved spec method". Mirrors the method list in exec_spec.rs plus
+/// the deep_view bridge.
+fn is_known_runtime_method(name: &str) -> bool {
+    matches!(
+        name,
+        "deep_view"
+            | "len"
+            | "dom"
+            | "index"
+            | "drop_first"
+            | "drop_last"
+            | "add"
+            | "push"
+            | "update"
+            | "subrange"
+            | "to_multiset"
+            | "take"
+            | "skip"
+            | "last"
+            | "first"
+            | "count"
+            | "is_prefix_of"
+            | "is_suffix_of"
+            | "contains"
+            | "contains_key"
+            | "get"
+            | "index_of"
+            | "index_of_first"
+            | "index_of_last"
+            | "insert"
+            | "remove"
+            | "intersect"
+            | "union"
+            | "difference"
+            | "sub"
+            | "unwrap"
+            | "as_slice"
+            | "clone"
+    )
+}
+
 /// For a clause that contains an inline quantifier, lift the entire clause
 /// into a synthetic `spec fn __pbt_clause_<n>(...)`. Returns:
 ///   - the synthetic spec fn (as an `ItemFn` to push into engine_items)
@@ -998,7 +1320,8 @@ fn return_shape_to_spec_type(shape: &ReturnShape) -> TokenStream2 {
 // PbtStrategy impl emission for user types (Phase 3)
 // ---------------------------------------------------------------------------
 
-/// Build a `BoxedStrategy` expression for a single field type.
+/// Build a `BoxedStrategy` expression for a single field type. The strategy
+/// produces the harness type (user's own type for user-defined elements).
 fn strategy_for_type(ty: &Type, user_types: &HashSet<String>) -> Result<TokenStream2, Error> {
     let elem = classify_param_elem(ty, user_types)?;
     let elem_ty = elem.harness_type();
@@ -1007,44 +1330,43 @@ fn strategy_for_type(ty: &Type, user_types: &HashSet<String>) -> Result<TokenStr
     })
 }
 
-fn emit_struct_strategy(
+/// Emit everything the harness needs for a user-defined struct:
+///   - `PbtStrategy for <Struct>` (samples the user's OWN type)
+///   - manual `Clone` + `Debug` (we can't derive on the Verus type without
+///     tripping Verus's auto-derive checks)
+///   - `__pbt_to_exec_<Struct>(&Struct) -> ExecStruct` converter.
+fn emit_struct_support(
     item_struct: &ItemStruct,
     user_types: &HashSet<String>,
 ) -> Result<TokenStream2, Error> {
-    let exec_name = format_ident!("Exec{}", item_struct.ident);
+    let name = &item_struct.ident;
+    let exec_name = format_ident!("Exec{}", name);
+    let conv = to_exec_fn_name(name);
 
-    // Manual Clone impl for the harness side. We cannot derive Clone on the
-    // engine type because Verus's auto-derive complains; emitting the impl
-    // here keeps it gated on cfg(test).
-    let clone_impl = emit_clone_impl_struct(&exec_name, &item_struct.fields);
+    let clone_impl = emit_clone_impl_struct(name, &item_struct.fields);
+    let debug_impl = emit_debug_impl(name);
 
-    match &item_struct.fields {
+    let strategy_impl = match &item_struct.fields {
         Fields::Named(named) => {
-            let field_names: Vec<&Ident> = named
-                .named
-                .iter()
-                .map(|f| f.ident.as_ref().unwrap())
-                .collect();
+            let field_names: Vec<&Ident> =
+                named.named.iter().map(|f| f.ident.as_ref().unwrap()).collect();
             let field_strats: Vec<TokenStream2> = named
                 .named
                 .iter()
                 .map(|f| strategy_for_type(&f.ty, user_types))
                 .collect::<Result<Vec<_>, _>>()?;
-
-            // Tuple-of-strategies → prop_map → boxed
             let tuple_pat = quote! { (#(#field_names),*) };
-            Ok(quote! {
-                #clone_impl
-                impl ::verus_pbt_runtime::PbtStrategy for #exec_name {
-                    type Strategy = ::proptest::strategy::BoxedStrategy<#exec_name>;
+            quote! {
+                impl ::verus_pbt_runtime::PbtStrategy for #name {
+                    type Strategy = ::proptest::strategy::BoxedStrategy<#name>;
                     fn pbt_strategy() -> Self::Strategy {
                         use ::proptest::strategy::Strategy;
                         (#(#field_strats),*)
-                            .prop_map(|#tuple_pat| #exec_name { #(#field_names),* })
+                            .prop_map(|#tuple_pat| #name { #(#field_names),* })
                             .boxed()
                     }
                 }
-            })
+            }
         }
         Fields::Unnamed(unnamed) => {
             let n = unnamed.unnamed.len();
@@ -1053,67 +1375,78 @@ fn emit_struct_strategy(
                 .iter()
                 .map(|f| strategy_for_type(&f.ty, user_types))
                 .collect::<Result<Vec<_>, _>>()?;
-            let var_names: Vec<Ident> =
-                (0..n).map(|i| format_ident!("__f{}", i)).collect();
+            let var_names: Vec<Ident> = (0..n).map(|i| format_ident!("__f{}", i)).collect();
             let tuple_pat = quote! { (#(#var_names),*) };
-            Ok(quote! {
-                #clone_impl
-                impl ::verus_pbt_runtime::PbtStrategy for #exec_name {
-                    type Strategy = ::proptest::strategy::BoxedStrategy<#exec_name>;
+            quote! {
+                impl ::verus_pbt_runtime::PbtStrategy for #name {
+                    type Strategy = ::proptest::strategy::BoxedStrategy<#name>;
                     fn pbt_strategy() -> Self::Strategy {
                         use ::proptest::strategy::Strategy;
                         (#(#field_strats),*)
-                            .prop_map(|#tuple_pat| #exec_name(#(#var_names),*))
+                            .prop_map(|#tuple_pat| #name(#(#var_names),*))
                             .boxed()
                     }
                 }
-            })
+            }
         }
-        Fields::Unit => Ok(quote! {
-            #clone_impl
-            impl ::verus_pbt_runtime::PbtStrategy for #exec_name {
-                type Strategy = ::proptest::strategy::BoxedStrategy<#exec_name>;
+        Fields::Unit => quote! {
+            impl ::verus_pbt_runtime::PbtStrategy for #name {
+                type Strategy = ::proptest::strategy::BoxedStrategy<#name>;
                 fn pbt_strategy() -> Self::Strategy {
                     use ::proptest::strategy::Strategy;
-                    ::proptest::strategy::Just(#exec_name).boxed()
+                    ::proptest::strategy::Just(#name).boxed()
                 }
             }
-        }),
-    }
-}
+        },
+    };
 
-fn emit_clone_impl_struct(exec_name: &Ident, fields: &Fields) -> TokenStream2 {
-    let body = match fields {
+    // Converter body.
+    let conv_body = match &item_struct.fields {
         Fields::Named(named) => {
-            let field_clones = named.named.iter().map(|f| {
-                let n = f.ident.as_ref().unwrap();
-                quote! { #n: self.#n.clone() }
+            let inits = named.named.iter().map(|f| {
+                let fname = f.ident.as_ref().unwrap();
+                let conv_field = elem_to_exec_expr(&f.ty, quote! { self_value.#fname }, user_types);
+                quote! { #fname: #conv_field }
             });
-            quote! { #exec_name { #(#field_clones),* } }
+            quote! { #exec_name { #(#inits),* } }
         }
         Fields::Unnamed(unnamed) => {
-            let field_clones = (0..unnamed.unnamed.len()).map(|i| {
+            let inits = unnamed.unnamed.iter().enumerate().map(|(i, f)| {
                 let idx = verus_syn::Index::from(i);
-                quote! { self.#idx.clone() }
+                elem_to_exec_expr(&f.ty, quote! { self_value.#idx }, user_types)
             });
-            quote! { #exec_name(#(#field_clones),*) }
+            quote! { #exec_name(#(#inits),*) }
         }
         Fields::Unit => quote! { #exec_name },
     };
-    quote! {
-        impl ::std::clone::Clone for #exec_name {
-            fn clone(&self) -> Self {
-                #body
+
+    Ok(quote! {
+        #clone_impl
+        #debug_impl
+        #strategy_impl
+        impl ::verus_pbt_runtime::ToExecModel for #name {
+            type Exec = #exec_name;
+            fn to_exec_model(&self) -> #exec_name {
+                let self_value = self;
+                #conv_body
             }
         }
-    }
+        impl ::verus_pbt_runtime::PbtSpecCompanion for #name {}
+        // Back-compat free fn (used by older call sites); delegates to the trait.
+        #[allow(non_snake_case)]
+        fn #conv(self_value: &#name) -> #exec_name {
+            <#name as ::verus_pbt_runtime::ToExecModel>::to_exec_model(self_value)
+        }
+    })
 }
 
-fn emit_enum_strategy(
+fn emit_enum_support(
     item_enum: &ItemEnum,
     user_types: &HashSet<String>,
 ) -> Result<TokenStream2, Error> {
-    let exec_name = format_ident!("Exec{}", item_enum.ident);
+    let name = &item_enum.ident;
+    let exec_name = format_ident!("Exec{}", name);
+    let conv = to_exec_fn_name(name);
 
     if item_enum.variants.is_empty() {
         return Err(Error::new_spanned(
@@ -1122,18 +1455,17 @@ fn emit_enum_strategy(
         ));
     }
 
-    let clone_impl = emit_clone_impl_enum(&exec_name, item_enum);
+    let clone_impl = emit_clone_impl_enum(name, item_enum);
+    let debug_impl = emit_debug_impl(name);
 
     let mut variant_arms: Vec<TokenStream2> = Vec::new();
+    let mut conv_arms: Vec<TokenStream2> = Vec::new();
     for variant in &item_enum.variants {
         let vname = &variant.ident;
         match &variant.fields {
             Fields::Named(named) => {
-                let field_names: Vec<&Ident> = named
-                    .named
-                    .iter()
-                    .map(|f| f.ident.as_ref().unwrap())
-                    .collect();
+                let field_names: Vec<&Ident> =
+                    named.named.iter().map(|f| f.ident.as_ref().unwrap()).collect();
                 let field_strats: Vec<TokenStream2> = named
                     .named
                     .iter()
@@ -1142,8 +1474,17 @@ fn emit_enum_strategy(
                 let tuple_pat = quote! { (#(#field_names),*) };
                 variant_arms.push(quote! {
                     (#(#field_strats),*)
-                        .prop_map(|#tuple_pat| #exec_name::#vname { #(#field_names),* })
+                        .prop_map(|#tuple_pat| #name::#vname { #(#field_names),* })
                         .boxed()
+                });
+                // converter arm
+                let conv_inits = named.named.iter().map(|f| {
+                    let fname = f.ident.as_ref().unwrap();
+                    let conv_field = elem_to_exec_expr(&f.ty, quote! { #fname.clone() }, user_types);
+                    quote! { #fname: #conv_field }
+                });
+                conv_arms.push(quote! {
+                    #name::#vname { #(#field_names),* } => #exec_name::#vname { #(#conv_inits),* }
                 });
             }
             Fields::Unnamed(unnamed) => {
@@ -1153,18 +1494,27 @@ fn emit_enum_strategy(
                     .iter()
                     .map(|f| strategy_for_type(&f.ty, user_types))
                     .collect::<Result<Vec<_>, _>>()?;
-                let var_names: Vec<Ident> =
-                    (0..n).map(|i| format_ident!("__f{}", i)).collect();
+                let var_names: Vec<Ident> = (0..n).map(|i| format_ident!("__f{}", i)).collect();
                 let tuple_pat = quote! { (#(#var_names),*) };
                 variant_arms.push(quote! {
                     (#(#field_strats),*)
-                        .prop_map(|#tuple_pat| #exec_name::#vname(#(#var_names),*))
+                        .prop_map(|#tuple_pat| #name::#vname(#(#var_names),*))
                         .boxed()
+                });
+                let conv_inits = unnamed.unnamed.iter().enumerate().map(|(i, f)| {
+                    let vn = &var_names[i];
+                    elem_to_exec_expr(&f.ty, quote! { #vn.clone() }, user_types)
+                });
+                conv_arms.push(quote! {
+                    #name::#vname(#(#var_names),*) => #exec_name::#vname(#(#conv_inits),*)
                 });
             }
             Fields::Unit => {
                 variant_arms.push(quote! {
-                    ::proptest::strategy::Just(#exec_name::#vname).boxed()
+                    ::proptest::strategy::Just(#name::#vname).boxed()
+                });
+                conv_arms.push(quote! {
+                    #name::#vname => #exec_name::#vname
                 });
             }
         }
@@ -1172,8 +1522,9 @@ fn emit_enum_strategy(
 
     Ok(quote! {
         #clone_impl
-        impl ::verus_pbt_runtime::PbtStrategy for #exec_name {
-            type Strategy = ::proptest::strategy::BoxedStrategy<#exec_name>;
+        #debug_impl
+        impl ::verus_pbt_runtime::PbtStrategy for #name {
+            type Strategy = ::proptest::strategy::BoxedStrategy<#name>;
             fn pbt_strategy() -> Self::Strategy {
                 use ::proptest::strategy::Strategy;
                 ::proptest::prop_oneof![
@@ -1182,18 +1533,93 @@ fn emit_enum_strategy(
                 .boxed()
             }
         }
+        impl ::verus_pbt_runtime::ToExecModel for #name {
+            type Exec = #exec_name;
+            fn to_exec_model(&self) -> #exec_name {
+                match self {
+                    #(#conv_arms),*
+                }
+            }
+        }
+        impl ::verus_pbt_runtime::PbtSpecCompanion for #name {}
+        #[allow(non_snake_case)]
+        fn #conv(self_value: &#name) -> #exec_name {
+            <#name as ::verus_pbt_runtime::ToExecModel>::to_exec_model(self_value)
+        }
     })
 }
 
-fn emit_clone_impl_enum(exec_name: &Ident, item_enum: &ItemEnum) -> TokenStream2 {
+/// Build the expression converting a field of type `ty` (accessed via `expr`,
+/// which yields the user-side value) into its `Exec*` form.
+fn elem_to_exec_expr(ty: &Type, expr: TokenStream2, user_types: &HashSet<String>) -> TokenStream2 {
+    match classify_param_elem(ty, user_types) {
+        Ok(ParamElem::Primitive(_)) => expr,
+        Ok(ParamElem::UserType(name)) => {
+            // Fully-qualified trait call: resolves across files and triggers
+            // the ToExecModel `on_unimplemented` diagnostic if unprovided.
+            quote! {
+                <#name as ::verus_pbt_runtime::ToExecModel>::to_exec_model(&#expr)
+            }
+        }
+        // Total fallback: keep as-is.
+        Err(_) => quote! { #expr },
+    }
+}
+
+fn emit_clone_impl_struct(name: &Ident, fields: &Fields) -> TokenStream2 {
+    let body = match fields {
+        Fields::Named(named) => {
+            let field_clones = named.named.iter().map(|f| {
+                let n = f.ident.as_ref().unwrap();
+                quote! { #n: self.#n.clone() }
+            });
+            quote! { #name { #(#field_clones),* } }
+        }
+        Fields::Unnamed(unnamed) => {
+            let field_clones = (0..unnamed.unnamed.len()).map(|i| {
+                let idx = verus_syn::Index::from(i);
+                quote! { self.#idx.clone() }
+            });
+            quote! { #name(#(#field_clones),*) }
+        }
+        Fields::Unit => quote! { #name },
+    };
+    quote! {
+        impl ::std::clone::Clone for #name {
+            fn clone(&self) -> Self {
+                #body
+            }
+        }
+    }
+}
+
+fn emit_debug_impl(name: &Ident) -> TokenStream2 {
+    // We can't `#[derive(Debug)]` on the Verus-side type (Verus's derive
+    // handling rejects it), and we can't reference the user type's fields
+    // generically here without re-deriving. Instead, Debug delegates to the
+    // engine's `Exec*` companion (which DOES derive a full Debug) by
+    // converting through the generated `__pbt_to_exec_*` fn. This gives
+    // useful counterexample output ("ExecUser { name_len: 1, ... }").
+    let conv = to_exec_fn_name(name);
+    quote! {
+        impl ::std::fmt::Debug for #name {
+            fn fmt(&self, f: &mut ::std::fmt::Formatter<'_>) -> ::std::fmt::Result {
+                ::std::fmt::Debug::fmt(&#conv(self), f)
+            }
+        }
+    }
+}
+
+fn emit_clone_impl_enum(name: &Ident, item_enum: &ItemEnum) -> TokenStream2 {
     let arms = item_enum.variants.iter().map(|variant| {
         let vname = &variant.ident;
         match &variant.fields {
             Fields::Named(named) => {
-                let names: Vec<&Ident> = named.named.iter().map(|f| f.ident.as_ref().unwrap()).collect();
+                let names: Vec<&Ident> =
+                    named.named.iter().map(|f| f.ident.as_ref().unwrap()).collect();
                 let clones = names.iter().map(|n| quote! { #n: #n.clone() });
                 quote! {
-                    #exec_name::#vname { #(#names),* } => #exec_name::#vname { #(#clones),* }
+                    #name::#vname { #(#names),* } => #name::#vname { #(#clones),* }
                 }
             }
             Fields::Unnamed(unnamed) => {
@@ -1201,16 +1627,16 @@ fn emit_clone_impl_enum(exec_name: &Ident, item_enum: &ItemEnum) -> TokenStream2
                 let names: Vec<Ident> = (0..n).map(|i| format_ident!("__f{}", i)).collect();
                 let clones = names.iter().map(|n| quote! { #n.clone() });
                 quote! {
-                    #exec_name::#vname(#(#names),*) => #exec_name::#vname(#(#clones),*)
+                    #name::#vname(#(#names),*) => #name::#vname(#(#clones),*)
                 }
             }
             Fields::Unit => quote! {
-                #exec_name::#vname => #exec_name::#vname
+                #name::#vname => #name::#vname
             },
         }
     });
     quote! {
-        impl ::std::clone::Clone for #exec_name {
+        impl ::std::clone::Clone for #name {
             fn clone(&self) -> Self {
                 match self {
                     #(#arms),*
@@ -1232,25 +1658,70 @@ struct HarnessOutput {
 }
 
 fn emit_harness(
-    item_fn: &ItemFn,
+    target: &ContractTarget,
     spec_fn_names: &HashSet<String>,
     user_types: &HashSet<String>,
     clause_counter: &mut u64,
 ) -> Result<HarnessOutput, Error> {
-    let fn_name = &item_fn.sig.ident;
-    let pbt_fn_name = format_ident!("pbt_{}", fn_name);
+    // Pull out the bits that depend on free-fn vs method shape.
+    let (sig, fn_name, is_method, self_ty_for_method): (&verus_syn::Signature, &Ident, bool, Option<Ident>) =
+        match target {
+            ContractTarget::FreeFn(item_fn) => (&item_fn.sig, &item_fn.sig.ident, false, None),
+            ContractTarget::Method { self_ty, method } => {
+                (&method.sig, &method.sig.ident, true, Some(self_ty.clone()))
+            }
+        };
+    let pbt_fn_name = if is_method {
+        let self_str = self_ty_for_method.as_ref().unwrap().to_string();
+        format_ident!("pbt_{}_{}", self_str, fn_name)
+    } else {
+        format_ident!("pbt_{}", fn_name)
+    };
 
-    // 1. Inspect parameters.
+    // 1. Inspect parameters. Methods get a synthetic `self` ident bound
+    // to the same shape as `&Self` (a `RefUserType`).
     let mut param_idents = Vec::new();
     let mut param_shapes = Vec::new();
-    for p in &item_fn.sig.inputs {
+    let mut self_ident: Option<Ident> = None;
+    for p in &sig.inputs {
         match &p.kind {
-            FnArgKind::Receiver(_) => {
-                return Err(Error::new_spanned(
-                    p,
-                    "verus_pbt: methods (with `self` receiver) on contract-bearing exec fns are \
-                     not yet supported",
-                ));
+            FnArgKind::Receiver(rcv) => {
+                if !is_method {
+                    return Err(Error::new_spanned(
+                        p,
+                        "verus_pbt: free fns cannot have a `self` receiver",
+                    ));
+                }
+                if rcv.reference.is_none() {
+                    return Err(Error::new_spanned(
+                        p,
+                        "verus_pbt: only `&self` is supported (no owned `self` or `&mut self`)",
+                    ));
+                }
+                if rcv.mutability.is_some() {
+                    return Err(Error::new_spanned(
+                        p,
+                        "verus_pbt: `&mut self` is not yet supported (Phase 2 work)",
+                    ));
+                }
+                let self_ty = self_ty_for_method.as_ref().unwrap();
+                // Recover the user-name (strip "Exec" if present). Whether or
+                // not the type is defined in THIS block, we treat the self
+                // receiver as a `RefUserType`: in-block types get a generated
+                // strategy/converter here; external types resolve theirs by
+                // trait across files (and surface the `on_unimplemented`
+                // diagnostic if never `#[pbt_provide]`'d).
+                let user_name_str = self_ty.to_string();
+                let canonical_user_name = user_name_str
+                    .strip_prefix("Exec")
+                    .unwrap_or(&user_name_str);
+                let canonical_user_ident =
+                    Ident::new(canonical_user_name, self_ty.span());
+                let synth_self =
+                    Ident::new("self_value", proc_macro2::Span::call_site());
+                param_idents.push(synth_self.clone());
+                param_shapes.push(ParamShape::RefUserType(canonical_user_ident));
+                self_ident = Some(synth_self);
             }
             FnArgKind::Typed(pat_type) => {
                 let ident = match pat_to_ident(&pat_type.pat) {
@@ -1271,13 +1742,33 @@ fn emit_harness(
 
     // 2. Per-param call form for the rewriter.
     let mut param_call_form: HashMap<String, TokenStream2> = HashMap::new();
+    let mut user_typed_idents: HashMap<String, Ident> = HashMap::new();
     for (id, shape) in param_idents.iter().zip(param_shapes.iter()) {
         param_call_form.insert(id.to_string(), shape.call_form_for_deep_view(id));
+        if let ParamShape::RefUserType(t) | ParamShape::OwnedUserType(t) = shape {
+            user_typed_idents.insert(id.to_string(), t.clone());
+        }
     }
+    let _ = &self_ident;
 
     // 3. Return shape and ident.
-    let return_shape = classify_return(&item_fn.sig.output, user_types)?;
-    let return_ident = return_ident_of(item_fn);
+    let return_shape = classify_return(&sig.output, user_types)?;
+    let return_ident = match target {
+        ContractTarget::FreeFn(item_fn) => return_ident_of(item_fn),
+        ContractTarget::Method { method, .. } => {
+            // ImplItemFn return signature follows the same shape; reuse the
+            // helper by faking a temporary ItemFn-shaped accessor.
+            if let ReturnType::Type(_, _, output_pat, _) = &method.sig.output {
+                if let Some(boxed) = output_pat.as_ref() {
+                    pat_to_ident(&boxed.1)
+                } else {
+                    None
+                }
+            } else {
+                None
+            }
+        }
+    };
 
     // 4. Build (name, spec_type) for synthetic-spec-fn signature use.
     let param_specs: Vec<(Ident, TokenStream2)> = param_idents
@@ -1286,8 +1777,7 @@ fn emit_harness(
         .map(|(id, shape)| (id.clone(), shape.spec_type()))
         .collect();
 
-    // 5. Process each requires/ensures clause: lift quantifier-bearing
-    //    clauses to a synthetic spec fn (Phase 4), then run the rewriter.
+    // 5. Process each requires/ensures clause.
     let mut synthetic_spec_fns: Vec<TokenStream2> = Vec::new();
     let mut rewritten_requires: Vec<TokenStream2> = Vec::new();
     let mut rewritten_ensures: Vec<TokenStream2> = Vec::new();
@@ -1296,9 +1786,16 @@ fn emit_harness(
                           synthetic_spec_fns: &mut Vec<TokenStream2>,
                           counter: &mut u64|
      -> TokenStream2 {
-        if contains_quantifier(clause_expr) {
+        let mut clause_expr = clause_expr.clone();
+        // For methods: rewrite `self` → `<self_value>` before further
+        // processing so the rewriter and quantifier-lift see ordinary idents.
+        if let Some(self_id) = &self_ident {
+            replace_self_with_ident(&mut clause_expr, self_id);
+        }
+
+        if contains_quantifier(&clause_expr) {
             let (synth, replacement) = lift_quantified_clause(
-                clause_expr,
+                &clause_expr,
                 fn_name,
                 counter,
                 &param_specs,
@@ -1306,13 +1803,8 @@ fn emit_harness(
                 &return_shape,
             );
             synthetic_spec_fns.push(synth);
-            // Run the rewriter over the replacement expression so the
-            // `<param>.deep_view()` calls inside it become `<param>.as_slice()`
-            // (or whatever the param shape says).
             let mut replacement_expr: Expr =
                 verus_syn::parse2(replacement).expect("synthetic clause must parse");
-            // Mark the synth fn name as a spec fn so the rewriter prefixes it
-            // with `exec_`.
             let synth_name_str = if let Expr::Call(c) = &replacement_expr {
                 if let Expr::Path(p) = c.func.as_ref() {
                     p.path.segments.last().map(|s| s.ident.to_string())
@@ -1329,16 +1821,18 @@ fn emit_harness(
             let mut rw = ContractRewriter {
                 spec_fn_names: &combined_specs,
                 param_call_form: &param_call_form,
+                user_typed_idents: &user_typed_idents,
                 return_ident: return_ident.clone(),
                 return_shape: return_shape.clone(),
             };
             rw.visit_expr_mut(&mut replacement_expr);
             quote! { #replacement_expr }
         } else {
-            let mut e = clause_expr.clone();
+            let mut e = clause_expr;
             let mut rw = ContractRewriter {
                 spec_fn_names,
                 param_call_form: &param_call_form,
+                user_typed_idents: &user_typed_idents,
                 return_ident: return_ident.clone(),
                 return_shape: return_shape.clone(),
             };
@@ -1347,13 +1841,33 @@ fn emit_harness(
         }
     };
 
-    if let Some(req) = &item_fn.sig.spec.requires {
+    if let Some(req) = &sig.spec.requires {
         for e in req.exprs.exprs.iter() {
+            let mut checked = e.clone();
+            if let Some(self_id) = &self_ident {
+                replace_self_with_ident(&mut checked, self_id);
+            }
+            check_clause_resolvable(
+                &checked,
+                spec_fn_names,
+                &user_typed_idents,
+                self_ident.as_ref(),
+            )?;
             rewritten_requires.push(process_clause(e, &mut synthetic_spec_fns, clause_counter));
         }
     }
-    if let Some(ens) = &item_fn.sig.spec.ensures {
+    if let Some(ens) = &sig.spec.ensures {
         for e in ens.exprs.exprs.iter() {
+            let mut checked = e.clone();
+            if let Some(self_id) = &self_ident {
+                replace_self_with_ident(&mut checked, self_id);
+            }
+            check_clause_resolvable(
+                &checked,
+                spec_fn_names,
+                &user_typed_idents,
+                self_ident.as_ref(),
+            )?;
             rewritten_ensures.push(process_clause(e, &mut synthetic_spec_fns, clause_counter));
         }
     }
@@ -1378,18 +1892,28 @@ fn emit_harness(
         .clone()
         .unwrap_or_else(|| Ident::new("__pbt_result", Span::call_site()));
 
+    // Adapt the call to either `super::fn_name(...)` or
+    // `super::Self::method(&self_value, ...)`. For methods the receiver is
+    // already in `real_call_args[0]` (since we treat self as a ParamShape).
+    let real_call: TokenStream2 = if is_method {
+        let self_ty = self_ty_for_method.as_ref().unwrap();
+        quote! { super::#self_ty::#fn_name(#(#real_call_args),*) }
+    } else {
+        quote! { super::#fn_name(#(#real_call_args),*) }
+    };
+
     let result_let = match return_shape {
         ReturnShape::Unit => quote! {
-            super::#fn_name(#(#real_call_args),*);
+            #real_call;
             let #result_binding: () = ();
             let _ = &#result_binding;
         },
         _ => quote! {
-            let #result_binding = super::#fn_name(#(#real_call_args),*);
+            let #result_binding = #real_call;
         },
     };
 
-    let harness_tokens = quote_spanned! { item_fn.sig.ident.span() =>
+    let harness_tokens = quote_spanned! { fn_name.span() =>
         proptest! {
             #[test]
             fn #pbt_fn_name(
@@ -1403,6 +1927,25 @@ fn emit_harness(
     };
 
     Ok(HarnessOutput { harness_tokens, synthetic_spec_fns })
+}
+
+/// Walk an expression and replace every `self` ident with `replacement`.
+fn replace_self_with_ident(expr: &mut Expr, replacement: &Ident) {
+    struct R<'a> {
+        replacement: &'a Ident,
+    }
+    impl<'a> VisitMut for R<'a> {
+        fn visit_expr_path_mut(&mut self, p: &mut ExprPath) {
+            for seg in p.path.segments.iter_mut() {
+                if seg.ident == "self" {
+                    seg.ident = self.replacement.clone();
+                }
+            }
+            verus_syn::visit_mut::visit_expr_path_mut(self, p);
+        }
+    }
+    let mut r = R { replacement };
+    r.visit_expr_mut(expr);
 }
 
 // ---------------------------------------------------------------------------
@@ -1425,9 +1968,9 @@ pub fn expand(input: TokenStream, verified: bool) -> TokenStream {
     let mut clause_counter: u64 = 0;
     let mut harnesses_tokens: Vec<TokenStream2> = Vec::new();
     let mut synthetic_spec_fns: Vec<TokenStream2> = Vec::new();
-    for f in &classified.contract_fns {
+    for target in &classified.contract_targets {
         let out = match emit_harness(
-            f,
+            target,
             &classified.spec_fn_names,
             &classified.user_type_names,
             &mut clause_counter,
@@ -1462,13 +2005,13 @@ pub fn expand(input: TokenStream, verified: bool) -> TokenStream {
         }
     };
 
-    // Strategy impls for user struct/enum types.
+    // Strategy + Clone/Debug + to_exec converter for each user type.
     let strategy_impls: Result<Vec<TokenStream2>, Error> = classified
         .user_types
         .iter()
         .map(|ut| match ut {
-            UserType::Struct(s) => emit_struct_strategy(s, &classified.user_type_names),
-            UserType::Enum(e) => emit_enum_strategy(e, &classified.user_type_names),
+            UserType::Struct(s) => emit_struct_support(s, &classified.user_type_names),
+            UserType::Enum(e) => emit_enum_support(e, &classified.user_type_names),
         })
         .collect();
     let strategy_block = match strategy_impls {
@@ -1484,19 +2027,37 @@ pub fn expand(input: TokenStream, verified: bool) -> TokenStream {
         Err(err) => return err.to_compile_error().into(),
     };
 
-    // Harness mod.
+    // Tier-4 external stub companions: emit `exec_<name>` fns into the harness
+    // module so contract calls `exec_<name>(..)` resolve. Errors here surface
+    // as compile errors at the macro site.
+    let external_companions = {
+        let mut out = TokenStream2::new();
+        for body in &classified.external_provide_bodies {
+            match crate::contrib::external_pbt_provide::emit_companions(body.clone()) {
+                Ok(ts) => out.extend(ts),
+                Err(err) => return err.to_compile_error().into(),
+            }
+        }
+        out
+    };
+
+    // Single test module holding strategy/Clone/Debug/converter support AND
+    // the proptest harnesses, so the harnesses can call the generated
+    // `__pbt_to_exec_*` converters and `pbt_strategy::<UserType>()` directly.
     let mod_name = fresh_mod_name();
-    let strategies_mod_name = format_ident!("{}_strategies", mod_name);
-    let harness_block = if harnesses_tokens.is_empty() {
+    let test_mod = if harnesses_tokens.is_empty() && classified.user_types.is_empty() {
         quote! {}
     } else {
         quote! {
             #[cfg(test)]
             #[allow(non_snake_case)]
             #[allow(unused_imports)]
+            #[allow(dead_code)]
             mod #mod_name {
                 use super::*;
                 use ::proptest::prelude::*;
+                #strategy_block
+                #external_companions
                 #(#harnesses_tokens)*
             }
         }
@@ -1505,21 +2066,7 @@ pub fn expand(input: TokenStream, verified: bool) -> TokenStream {
     let combined = quote! {
         #engine_block
         #passthrough_block
-        // Strategy impls compile against plain rustc (they target Exec*
-        // types defined inside the engine block above) so they sit outside
-        // any verus! wrapper. Gating on cfg(test) keeps them out of normal
-        // builds where proptest isn't a dependency, AND keeps them invisible
-        // to external integration tests. To assert PBT bug-detection from
-        // integration tests, write tests in `src/lib.rs` under
-        // `#[cfg(test)] mod ...`.
-        #[cfg(test)]
-        #[allow(non_snake_case)]
-        #[allow(unused_imports)]
-        mod #strategies_mod_name {
-            use super::*;
-            #strategy_block
-        }
-        #harness_block
+        #test_mod
     };
 
     combined.into()

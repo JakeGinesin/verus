@@ -106,13 +106,13 @@ impl Parse for Exprs {
 }
 
 #[derive(Clone, Copy, Debug)]
-enum TypeKind {
+pub(crate) enum TypeKind {
     Owned,
     Ref,
 }
 
 /// Converts a spec type to exec type via `<T as ExecSpecType>::Exec`.
-fn compile_type(typ: &Type, ctx: TypeKind) -> Result<TokenStream2, Error> {
+pub(crate) fn compile_type(typ: &Type, ctx: TypeKind) -> Result<TokenStream2, Error> {
     let span = typ.span();
     match typ {
         // Treat Seq<T> and other vstd types as a special case since

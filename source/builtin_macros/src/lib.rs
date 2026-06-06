@@ -661,6 +661,38 @@ pub fn verus_pbt_verified(
     contrib::verus_pbt::expand(input, /*verified=*/ true)
 }
 
+/// Tier-4 trusted exec stub for property-based testing of spec functions
+/// defined outside the current `verus!` block (e.g. in `vstd` or another
+/// crate). Place it in the same `verus!` block as the `#[pbt]` function:
+///
+/// ```ignore
+/// verus! {
+///     external_pbt_provide! {
+///         fn is_sorted(s: Seq<i64>) -> bool { s.windows(2).all(|w| w[0] <= w[1]) }
+///     }
+///     #[pbt]
+///     fn sort_it(s: &[i64]) -> (r: Vec<i64>) ensures is_sorted(r.deep_view()), { /* ... */ }
+/// }
+/// ```
+///
+/// It is consumed by the `#[pbt]` whole-block preprocessing pass; the body
+/// (a trusted `exec_<name>` companion) is emitted only into the generated
+/// `#[cfg(test)]` harness module and never participates in verification.
+///
+/// This proc-macro entry exists so the name resolves; if expanded directly
+/// (i.e. used **outside** a `verus!` block, where the whole-block pass never
+/// runs) it produces a clear error.
+#[proc_macro]
+pub fn external_pbt_provide(
+    _input: proc_macro::TokenStream,
+) -> proc_macro::TokenStream {
+    let msg = "external_pbt_provide! must be used inside a `verus! { ... }` block, \
+               alongside the `#[pbt]` function whose contract references the provided \
+               spec fn(s); it is consumed by the #[pbt] preprocessing pass and has no \
+               effect on its own";
+    quote::quote! { compile_error!(#msg); }.into()
+}
+
 /// Automate generating spec types and their View/DeepView implementations
 /// https://github.com/verus-lang/verus/pull/1798
 #[proc_macro_attribute]

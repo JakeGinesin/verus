@@ -1,0 +1,19 @@
+[package]
+name = "verus_pbt_split"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+path = "src/lib.rs"
+
+[dependencies]
+vstd = { path = "../../source/vstd" }
+
+[dev-dependencies]
+proptest = "1"
+verus_pbt_runtime = { path = "../../source/verus_pbt_runtime" }
+
+[package.metadata.verus]
+verify = true
+
+[workspace]

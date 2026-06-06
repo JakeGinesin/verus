@@ -97,8 +97,8 @@ verus_pbt_unverified! {
         p.a == x && p.b == y
     }
 
-    fn echo_pair(p: &ExecPair) -> (r: bool)
-        ensures pair_eq(p.deep_view(), p.a, p.b) == r,
+    fn echo_pair(p: &Pair) -> (r: bool)
+        ensures pair_eq(*p, p.a, p.b) == r,
     {
         true
     }
@@ -111,7 +111,7 @@ verus_pbt_unverified! {
         }
     }
 
-    fn always_pass(c: &ExecChoice) -> (r: bool)
+    fn always_pass(c: &Choice) -> (r: bool)
         ensures r == true,
     {
         let _ = c;
@@ -157,8 +157,8 @@ mod bug_detection {
     use proptest::test_runner::{Config, TestError, TestRunner};
     use verus_pbt_runtime::pbt_strategy;
 
-    use super::ExecChoice;
-    use super::ExecPair;
+    use super::Choice;
+    use super::Pair;
 
     fn run<S, F>(
         strategy: S,
@@ -249,22 +249,22 @@ mod bug_detection {
 
     #[test]
     fn macro_emitted_struct_strategy_works() {
-        let result = run(pbt_strategy::<ExecPair>(), |p: ExecPair| {
+        let result = run(pbt_strategy::<Pair>(), |p: Pair| {
             // Trivially-true postcondition.
             prop_assert!(p.a == p.a && p.b == p.b);
             Ok(())
         });
-        assert!(result.is_ok(), "ExecPair strategy: {:?}", result.map(|_| ()));
+        assert!(result.is_ok(), "Pair strategy: {:?}", result.map(|_| ()));
     }
 
     #[test]
     fn macro_emitted_struct_strategy_catches_bug() {
         // "spec": p.a == p.b. Buggy impl claims it always.
-        fn buggy_pair_eq(p: &ExecPair) -> bool {
+        fn buggy_pair_eq(p: &Pair) -> bool {
             let _ = p;
             true // BUG
         }
-        let result = run(pbt_strategy::<ExecPair>(), |p: ExecPair| {
+        let result = run(pbt_strategy::<Pair>(), |p: Pair| {
             let claimed = buggy_pair_eq(&p);
             let actual = p.a == p.b;
             prop_assert_eq!(claimed, actual);
@@ -282,37 +282,37 @@ mod bug_detection {
     fn macro_emitted_enum_strategy_covers_variants() {
         use std::sync::Mutex;
         let counts: Mutex<(u32, u32, u32)> = Mutex::new((0, 0, 0));
-        let result = run(pbt_strategy::<ExecChoice>(), |c| {
+        let result = run(pbt_strategy::<Choice>(), |c| {
             let mut cs = counts.lock().unwrap();
             match c {
-                ExecChoice::Left => cs.0 += 1,
-                ExecChoice::Right(_) => cs.1 += 1,
-                ExecChoice::Both { .. } => cs.2 += 1,
+                Choice::Left => cs.0 += 1,
+                Choice::Right(_) => cs.1 += 1,
+                Choice::Both { .. } => cs.2 += 1,
             }
             Ok(())
         });
         assert!(result.is_ok());
         let cs = counts.lock().unwrap();
-        assert!(cs.0 > 0, "ExecChoice::Left was never sampled");
-        assert!(cs.1 > 0, "ExecChoice::Right was never sampled");
-        assert!(cs.2 > 0, "ExecChoice::Both was never sampled");
+        assert!(cs.0 > 0, "Choice::Left was never sampled");
+        assert!(cs.1 > 0, "Choice::Right was never sampled");
+        assert!(cs.2 > 0, "Choice::Both was never sampled");
     }
 
     #[test]
     fn macro_emitted_enum_strategy_catches_bug() {
-        fn buggy_label(c: &ExecChoice) -> &'static str {
+        fn buggy_label(c: &Choice) -> &'static str {
             match c {
-                ExecChoice::Left => "left",
-                ExecChoice::Right(_) => "right",
-                ExecChoice::Both { .. } => "left", // BUG
+                Choice::Left => "left",
+                Choice::Right(_) => "right",
+                Choice::Both { .. } => "left", // BUG
             }
         }
-        let result = run(pbt_strategy::<ExecChoice>(), |c| {
+        let result = run(pbt_strategy::<Choice>(), |c| {
             let label = buggy_label(&c);
             match c {
-                ExecChoice::Left => prop_assert_eq!(label, "left"),
-                ExecChoice::Right(_) => prop_assert_eq!(label, "right"),
-                ExecChoice::Both { .. } => prop_assert_eq!(label, "both"),
+                Choice::Left => prop_assert_eq!(label, "left"),
+                Choice::Right(_) => prop_assert_eq!(label, "right"),
+                Choice::Both { .. } => prop_assert_eq!(label, "both"),
             }
             Ok(())
         });

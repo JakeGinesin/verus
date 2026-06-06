@@ -134,6 +134,7 @@
   - [Variable modes](./reference-var-modes.md)
 - [Contributed Extensions](contributed.md)
   - [Automatic spec to exec functions](exec_spec.md)
+  - [Property-based testing of contracts](verus_pbt.md)
   - [Spec and proof attributes for exec functions](exec_attr.md)
     - [Automatic exec to spec functions](exec_to_spec.md)
 - [Spec expressions](./spec-expressions.md)

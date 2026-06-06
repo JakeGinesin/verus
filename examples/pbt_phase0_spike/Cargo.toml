@@ -1,0 +1,13 @@
+[package]
+name = "pbt_phase0_spike"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+path = "src/lib.rs"
+
+[dependencies]
+proptest = "1"
+verus_pbt_runtime = { path = "../../source/verus_pbt_runtime" }
+
+[workspace]
