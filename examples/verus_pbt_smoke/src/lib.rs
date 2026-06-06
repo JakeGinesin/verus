@@ -1,10 +1,10 @@
 //! End-to-end smoke test for `verus_pbt_unverified!` and
 //! `verus_pbt_verified!` covering:
 //!
-//! - Phase 1: free fns, primitives, Vec / slice.
-//! - Phase 3: user struct param, enum param.
-//! - Phase 4: inline `forall` lifted into a synthetic spec fn.
-//! - Phase 4: `verus_pbt_verified!` end-to-end.
+//! - free fns, primitives, Vec / slice.
+//! - user struct param, enum param.
+//! - inline `forall` lifted into a synthetic spec fn.
+//! - `verus_pbt_verified!` end-to-end.
 //!
 //! Verify with `cargo verus verify`. Run the harness with plain `cargo test`.
 
