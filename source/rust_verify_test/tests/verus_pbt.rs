@@ -730,3 +730,137 @@ test_verify_one_file! {
         }
     } => Ok(())
 }
+
+// ---------------------------------------------------------------------------
+// Bug-fix coverage: uninterp specs, misplaced markers, `Self` returns, and
+// `#[pbt_provide]` on a method inside an impl.
+// ---------------------------------------------------------------------------
+
+test_verify_one_file! {
+    // An `uninterp spec fn` reached from a `#[pbt]` contract has no body the
+    // engine can lower. The pass should surface a tier-aware diagnostic
+    // pointing the user at the resolution options (rewrite as `open spec fn`
+    // with a body, or supply an `external_pbt_provide!` stub).
+    #[test] test_verus_pbt_uninterp_free_spec_diagnostic IMPORTS.to_string() + verus_code_str! {
+        #[allow(unused_imports)] use vstd::contrib::verus_pbt::*;
+
+        pub uninterp spec fn is_small_uninterp(n: u32) -> bool;
+
+        #[pbt]
+        fn clamp(n: u32) -> (r: u32)
+            ensures is_small_uninterp(r),
+        {
+            if n <= 100 { n } else { 100 }
+        }
+    } => Err(err) => assert_any_vir_error_msg(err, "has no body")
+}
+
+test_verify_one_file! {
+    // Same case but the uninterp spec fn lives on a user type as a method.
+    // The closure pulls in `Permission` and its impl block; the diagnostic
+    // must mention the qualified name.
+    #[test] test_verus_pbt_uninterp_method_diagnostic IMPORTS.to_string() + verus_code_str! {
+        #[allow(unused_imports)] use vstd::contrib::verus_pbt::*;
+
+        pub enum Permission { Read, Revoked }
+
+        impl Permission {
+            pub uninterp spec fn is_revoked(&self) -> bool;
+        }
+
+        pub struct User {
+            pub name_len: usize,
+            pub perm: Permission,
+        }
+
+        impl User {
+            pub open spec fn is_valid_spec(&self) -> bool {
+                self.name_len > 0 && !self.perm.is_revoked()
+            }
+
+            #[pbt]
+            #[verifier::external_body]
+            pub fn is_valid(&self) -> (b: bool)
+                ensures b == self.is_valid_spec(),
+            {
+                self.name_len > 0
+            }
+        }
+    } => Err(err) => assert_any_vir_error_msg(err, "has no body")
+}
+
+test_verify_one_file! {
+    // Even outside any `#[pbt]` contract, `#[pbt_provide]` directly on an
+    // uninterp spec fn cannot be folded into a runnable companion. The
+    // diagnostic must fire.
+    #[test] test_verus_pbt_uninterp_pbt_provide_diagnostic IMPORTS.to_string() + verus_code_str! {
+        #[allow(unused_imports)] use vstd::contrib::verus_pbt::*;
+
+        #[pbt_provide]
+        pub uninterp spec fn lonely_uninterp(n: u32) -> bool;
+    } => Err(err) => assert_any_vir_error_msg(err, "has no body")
+}
+
+test_verify_one_file! {
+    // `#[pbt_provide]` on an unsupported item kind (here, a `mod`) should
+    // produce a clear placement error directing the user to a struct/enum/
+    // free spec fn / impl method.
+    #[test] test_verus_pbt_provide_on_mod IMPORTS.to_string() + verus_code_str! {
+        #[allow(unused_imports)] use vstd::contrib::verus_pbt::*;
+
+        #[pbt_provide]
+        pub mod inside {
+            pub fn x() {}
+        }
+    } => Err(err) => assert_any_vir_error_msg(err, "Move `#[pbt_provide]`")
+}
+
+test_verify_one_file! {
+    // `#[pbt_provide]` on a `use` should also produce the placement error.
+    #[test] test_verus_pbt_provide_on_use IMPORTS.to_string() + verus_code_str! {
+        #[allow(unused_imports)] use vstd::contrib::verus_pbt::*;
+
+        #[pbt_provide]
+        pub use core::option::Option;
+    } => Err(err) => assert_any_vir_error_msg(err, "Move `#[pbt_provide]`")
+}
+
+test_verify_one_file! {
+    // `#[pbt_provide]` on a method inside an inherent impl: should fold the
+    // surrounding impl into the engine block, giving the type companions and
+    // a runnable spec method without the user having to mark the type itself.
+    #[test] test_verus_pbt_provide_on_impl_method IMPORTS.to_string() + verus_code_str! {
+        #[allow(unused_imports)] use vstd::contrib::verus_pbt::*;
+
+        pub struct Counter { pub n: u32 }
+
+        impl Counter {
+            #[pbt_provide]
+            pub open spec fn small(&self) -> bool { self.n <= 100 }
+        }
+    } => Ok(())
+}
+
+test_verify_one_file! {
+    // A `#[pbt]` method whose return type is `Self` should be supported:
+    // the harness must treat the return as `OwnedUserType(Counter)` and
+    // generate the right strategy/converter, not bail with "unsupported
+    // return type".
+    #[test] test_verus_pbt_method_returns_self IMPORTS.to_string() + verus_code_str! {
+        #[allow(unused_imports)] use vstd::contrib::verus_pbt::*;
+
+        pub struct Counter { pub n: u32 }
+
+        impl Counter {
+            pub open spec fn n_spec(&self) -> u32 { self.n }
+
+            #[pbt]
+            #[verifier::external_body]
+            pub fn copy(&self) -> (r: Self)
+                ensures r.n == self.n_spec(),
+            {
+                Counter { n: self.n }
+            }
+        }
+    } => Ok(())
+}

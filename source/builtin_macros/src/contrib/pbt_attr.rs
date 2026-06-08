@@ -31,9 +31,10 @@
 use proc_macro2::TokenStream as TokenStream2;
 use quote::quote;
 use std::collections::{HashMap, HashSet};
+use verus_syn::spanned::Spanned;
 use verus_syn::visit::Visit;
 use verus_syn::{
-    Attribute, Expr, ExprPath, FnMode, Ident, ImplItem, Item, PathArguments, Type, UseTree,
+    Attribute, Expr, ExprPath, FnMode, Ident, ImplItem, Item, ItemFn, PathArguments, Type, UseTree,
 };
 
 // ---------------------------------------------------------------------------
@@ -63,6 +64,17 @@ fn item_attrs_mut(item: &mut Item) -> Option<&mut Vec<Attribute>> {
         Item::Struct(i) => Some(&mut i.attrs),
         Item::Impl(i) => Some(&mut i.attrs),
         Item::Fn(i) => Some(&mut i.attrs),
+        Item::Mod(i) => Some(&mut i.attrs),
+        Item::Use(i) => Some(&mut i.attrs),
+        Item::Const(i) => Some(&mut i.attrs),
+        Item::Static(i) => Some(&mut i.attrs),
+        Item::Type(i) => Some(&mut i.attrs),
+        Item::Macro(i) => Some(&mut i.attrs),
+        Item::ExternCrate(i) => Some(&mut i.attrs),
+        Item::ForeignMod(i) => Some(&mut i.attrs),
+        Item::Trait(i) => Some(&mut i.attrs),
+        Item::TraitAlias(i) => Some(&mut i.attrs),
+        Item::Union(i) => Some(&mut i.attrs),
         _ => None,
     }
 }
@@ -73,12 +85,85 @@ fn item_attrs(item: &Item) -> Option<&Vec<Attribute>> {
         Item::Struct(i) => Some(&i.attrs),
         Item::Impl(i) => Some(&i.attrs),
         Item::Fn(i) => Some(&i.attrs),
+        Item::Mod(i) => Some(&i.attrs),
+        Item::Use(i) => Some(&i.attrs),
+        Item::Const(i) => Some(&i.attrs),
+        Item::Static(i) => Some(&i.attrs),
+        Item::Type(i) => Some(&i.attrs),
+        Item::Macro(i) => Some(&i.attrs),
+        Item::ExternCrate(i) => Some(&i.attrs),
+        Item::ForeignMod(i) => Some(&i.attrs),
+        Item::Trait(i) => Some(&i.attrs),
+        Item::TraitAlias(i) => Some(&i.attrs),
+        Item::Union(i) => Some(&i.attrs),
         _ => None,
     }
 }
 
 fn item_has_attr(item: &Item, name: &str) -> bool {
     item_attrs(item).map_or(false, |attrs| attrs.iter().any(|a| attr_is(a, name)))
+}
+
+/// Find the span of an attribute named `name` on `item` (for error reporting).
+fn item_attr_span(item: &Item, name: &str) -> Option<proc_macro2::Span> {
+    item_attrs(item)?
+        .iter()
+        .find(|a| attr_is(a, name))
+        .map(|a| a.path().segments.last().map(|s| s.ident.span()).unwrap_or_else(|| a.path().span()))
+}
+
+/// Find the span of an attribute named `name` on an impl-item fn.
+fn impl_fn_attr_span(f: &verus_syn::ImplItemFn, name: &str) -> Option<proc_macro2::Span> {
+    f.attrs
+        .iter()
+        .find(|a| attr_is(a, name))
+        .map(|a| a.path().segments.last().map(|s| s.ident.span()).unwrap_or_else(|| a.path().span()))
+}
+
+/// Item kinds `#[pbt_provide]` knows how to fold into the engine block.
+/// Returns a static description of the item kind for error messages, or None
+/// when the item kind is supported.
+fn pbt_provide_unsupported_item_kind(item: &Item) -> Option<&'static str> {
+    match item {
+        // Supported: types, free fns (spec or exec), and inherent impl blocks.
+        Item::Struct(_) | Item::Enum(_) | Item::Fn(_) => None,
+        Item::Impl(im) => {
+            if im.trait_.is_some() {
+                Some("a trait impl block (only inherent `impl Type { ... }` blocks are supported)")
+            } else if !im.generics.params.is_empty() {
+                Some("a generic impl block (the engine doesn't yet support generics)")
+            } else {
+                None
+            }
+        }
+        Item::Trait(_) => Some("a trait declaration"),
+        Item::TraitAlias(_) => Some("a trait alias"),
+        Item::Mod(_) => Some("a module"),
+        Item::Use(_) => Some("a `use` declaration"),
+        Item::Const(_) => Some("a `const` item"),
+        Item::Static(_) => Some("a `static` item"),
+        Item::Type(_) => Some("a type alias"),
+        Item::Macro(_) => Some("a macro invocation"),
+        Item::ExternCrate(_) => Some("an `extern crate` declaration"),
+        Item::ForeignMod(_) => Some("an `extern { ... }` block"),
+        Item::Union(_) => Some("a union (only structs and enums are supported)"),
+        Item::AssumeSpecification(_) => Some("an `assume_specification!` item"),
+        _ => Some("an item of an unsupported kind"),
+    }
+}
+
+/// True if `f` is a body-less spec fn (i.e. an `uninterp spec fn` or a spec fn
+/// declared without a body that the parser flagged with a deprecation warning).
+/// The exec_spec engine cannot compile body-less specs into runnable companions,
+/// so we surface a tailored error before invoking it.
+fn is_uninterp_spec_fn(f: &ItemFn) -> bool {
+    matches!(f.sig.mode, FnMode::Spec(..) | FnMode::SpecChecked(..))
+        && (f.semi_token.is_some() || f.block.stmts.is_empty())
+}
+
+fn impl_fn_is_uninterp_spec(f: &verus_syn::ImplItemFn) -> bool {
+    matches!(f.sig.mode, FnMode::Spec(..) | FnMode::SpecChecked(..))
+        && (f.semi_token.is_some() || f.block.stmts.is_empty())
 }
 
 /// Lenient match for a macro invocation path: `m!`, `contrib::m!`,
@@ -586,6 +671,29 @@ only free spec-fn calls need one of the tiers above.)",
 // The unified pass
 // ---------------------------------------------------------------------------
 
+/// Diagnostic for a body-less / `uninterp spec fn` reached from a `#[pbt]`
+/// closure. The exec_spec engine cannot generate a runnable companion for
+/// it, so the harness has nothing to evaluate the contract against.
+fn uninterp_spec_message(qualified_name: &str) -> String {
+    format!(
+        "verus_pbt: the spec function `{name}` has no body (it is `uninterp` or otherwise \
+body-less), so the engine cannot generate a runnable `exec_*` companion for it.\n\
+\n\
+A `#[pbt]` contract that reaches an uninterpreted spec fn cannot be property-tested: \
+proptest needs an executable definition to evaluate the requires/ensures clauses against.\n\
+\n\
+Resolve it at the first applicable tier:\n\
+\u{20} 1. Replace the `uninterp spec fn` with an `open spec fn` that has a body, when you can \
+provide one;\n\
+\u{20} 2. Or wrap the property test so it does not depend on the uninterp spec fn (rewrite \
+the `#[pbt]` contract to use only spec fns with bodies);\n\
+\u{20} 3. Or supply a trusted exec stub next to your `#[pbt]` fn:\n\
+\u{20}      external_pbt_provide! {{ fn {name}(/* args */) -> /* ret */ {{ /* exec body */ }} }}\n\
+\u{20}    The trusted body is `#[cfg(test)]`-only and never participates in verification.",
+        name = qualified_name
+    )
+}
+
 /// Whole-block preprocessing for `#[pbt]` and `#[pbt_provide]`. Returns true
 /// if it rewrote `items`.
 pub(crate) fn pbt_provide_preprocess(items: &mut Vec<Item>) -> bool {
@@ -610,6 +718,96 @@ pub(crate) fn pbt_provide_preprocess(items: &mut Vec<Item>) -> bool {
     }
     if !any_marker {
         return false;
+    }
+
+    // 0. Reject misplaced markers up front with actionable errors. We do this
+    // BEFORE building the index so we can give precise placement guidance
+    // ("put `#[pbt_provide]` on the struct/enum, free fn, or its method").
+    let mut placement_errors: Vec<TokenStream2> = Vec::new();
+    for item in items.iter() {
+        // `#[pbt_provide]` on an item kind we can't fold.
+        if item_has_attr(item, "pbt_provide") {
+            if let Some(kind) = pbt_provide_unsupported_item_kind(item) {
+                let span = item_attr_span(item, "pbt_provide")
+                    .unwrap_or_else(proc_macro2::Span::call_site);
+                let msg = format!(
+                    "verus_pbt: `#[pbt_provide]` was placed on {kind}, but it can only be \
+applied to:\n\
+\u{20} - a `struct` or `enum` definition (folds the type and its inherent impls into the engine);\n\
+\u{20} - a free `spec fn` definition (folds just that spec fn);\n\
+\u{20} - a method inside a non-generic inherent `impl Type {{ ... }}` block (folds the surrounding impl).\n\
+\n\
+Move `#[pbt_provide]` to the top of the relevant `struct`/`enum`, free `spec fn`, \
+or impl method instead.",
+                    kind = kind
+                );
+                placement_errors.push(quote::quote_spanned! { span =>
+                    const _: () = { compile_error!(#msg); };
+                });
+            }
+        }
+        // `#[pbt_provide]` on a method inside a *trait* impl, *generic* impl, or
+        // an `impl T for U` (which we can't fold). Method-level placement
+        // inside a non-generic inherent impl is supported (handled below by
+        // promoting the surrounding impl into the engine block).
+        if let Item::Impl(im) = item {
+            let bad_impl = im.trait_.is_some() || !im.generics.params.is_empty();
+            if bad_impl {
+                for ii in &im.items {
+                    if let ImplItem::Fn(f) = ii {
+                        for marker in &["pbt_provide", "pbt"] {
+                            if impl_fn_has_attr(f, marker) {
+                                let span = impl_fn_attr_span(f, marker)
+                                    .unwrap_or_else(proc_macro2::Span::call_site);
+                                let kind = if im.trait_.is_some() {
+                                    "a trait impl block (only inherent `impl Type { ... }` blocks are supported)"
+                                } else {
+                                    "a generic impl block (the engine doesn't yet support generics)"
+                                };
+                                let msg = format!(
+                                    "verus_pbt: `#[{marker}]` on a method inside {kind}.\n\
+\n\
+Move the method (or the marker) to a non-generic inherent `impl Type {{ ... }}` \
+block — the engine cannot synthesize an exec companion for trait/generic impl \
+methods.",
+                                    marker = marker,
+                                    kind = kind
+                                );
+                                placement_errors.push(quote::quote_spanned! { span =>
+                                    const _: () = { compile_error!(#msg); };
+                                });
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+    if !placement_errors.is_empty() {
+        let mut error_items: Vec<Item> = Vec::new();
+        for ts in placement_errors {
+            if let Ok(item) = verus_syn::parse2::<Item>(ts) {
+                error_items.push(item);
+            }
+        }
+        // Stripping markers on the existing items so they don't reach rustc as
+        // unknown attributes alongside our diagnostics.
+        let mut sanitized = std::mem::take(items);
+        for item in &mut sanitized {
+            strip_attr_item(item, "pbt_provide");
+            strip_attr_item(item, "pbt");
+            if let Item::Impl(im) = item {
+                for ii in &mut im.items {
+                    if let ImplItem::Fn(f) = ii {
+                        strip_attr_impl_fn(f, "pbt");
+                        strip_attr_impl_fn(f, "pbt_provide");
+                    }
+                }
+            }
+        }
+        error_items.extend(sanitized);
+        *items = error_items;
+        return true;
     }
 
     let index = build_index(items);
@@ -644,6 +842,14 @@ pub(crate) fn pbt_provide_preprocess(items: &mut Vec<Item>) -> bool {
             if let Some(n) = type_def_name(item) {
                 explicit_provided_types.insert(n.to_string());
             }
+            // #[pbt_provide] on a free fn: include it. If it's a free spec fn,
+            // also recurse into its body so nested calls are folded too.
+            if let Item::Fn(f) = item {
+                collect_sig_idents(&f.sig, &mut seed_idents);
+                if matches!(f.sig.mode, FnMode::Spec(..)) {
+                    collect_block_idents(&f.block, &mut seed_idents);
+                }
+            }
         }
         // #[pbt] on a free fn: include the fn, seed closure from its contract.
         if item_has_attr(item, "pbt") {
@@ -653,20 +859,36 @@ pub(crate) fn pbt_provide_preprocess(items: &mut Vec<Item>) -> bool {
                 collect_free_call_names(&f.sig, &mut pbt_free_calls);
             }
         }
-        // #[pbt] on a method inside an impl: include the whole impl block,
-        // and the impl's Self type; seed from the method's contract.
+        // #[pbt] / #[pbt_provide] on a method inside an impl: include the
+        // whole impl block (only non-generic inherent ones — others were
+        // rejected in step 0) and the impl's Self type. For #[pbt] also seed
+        // from the method's contract; for #[pbt_provide] inside an impl, mark
+        // the Self type as explicitly provided so its other inherent impl
+        // blocks come in too.
         if let Item::Impl(im) = item {
-            let mut impl_has_pbt = false;
+            let mut impl_has_marker = false;
             for ii in &im.items {
                 if let ImplItem::Fn(f) = ii {
                     if impl_fn_has_attr(f, "pbt") {
-                        impl_has_pbt = true;
+                        impl_has_marker = true;
                         collect_contract_idents(&f.sig, &mut seed_idents);
                         collect_free_call_names(&f.sig, &mut pbt_free_calls);
                     }
+                    if impl_fn_has_attr(f, "pbt_provide") {
+                        impl_has_marker = true;
+                        // For a spec method, seed from its body so nested
+                        // references are folded.
+                        collect_sig_idents(&f.sig, &mut seed_idents);
+                        if matches!(f.sig.mode, FnMode::Spec(..)) {
+                            collect_block_idents(&f.block, &mut seed_idents);
+                        }
+                        if let Some(self_name) = inherent_impl_self_name(item) {
+                            explicit_provided_types.insert(self_name.to_string());
+                        }
+                    }
                 }
             }
-            if impl_has_pbt {
+            if impl_has_marker {
                 engine_idxs.insert(i);
                 if let Some(self_name) = inherent_impl_self_name(item) {
                     seed_idents.insert(self_name.to_string());
@@ -724,6 +946,71 @@ pub(crate) fn pbt_provide_preprocess(items: &mut Vec<Item>) -> bool {
     // 3. Compute the closure from the seeds and union it in.
     let closure = compute_closure(seed_idents, items, &index);
     engine_idxs.extend(closure);
+
+    // 3b. Diagnostic: any uninterp spec fn (or body-less spec fn) folded into
+    // the engine block has no body the engine can lower into a runnable
+    // companion. Surface a tailored error rather than letting `exec_spec`
+    // produce a "missing return expression" or "unsupported statement" error
+    // on the empty body.
+    let mut uninterp_errors: Vec<TokenStream2> = Vec::new();
+    for &idx in &engine_idxs {
+        let item = &items[idx];
+        match item {
+            Item::Fn(f) if is_uninterp_spec_fn(f) => {
+                let span = f.sig.ident.span();
+                let name = f.sig.ident.to_string();
+                let msg = uninterp_spec_message(&name);
+                uninterp_errors.push(quote::quote_spanned! { span =>
+                    const _: () = { compile_error!(#msg); };
+                });
+            }
+            Item::Impl(im) => {
+                for ii in &im.items {
+                    if let ImplItem::Fn(f) = ii {
+                        if impl_fn_is_uninterp_spec(f) {
+                            let span = f.sig.ident.span();
+                            let owner = inherent_impl_self_name(item)
+                                .map(|n| n.to_string())
+                                .unwrap_or_else(|| "?".to_string());
+                            let qualified = format!("{}::{}", owner, f.sig.ident);
+                            let msg = uninterp_spec_message(&qualified);
+                            uninterp_errors.push(quote::quote_spanned! { span =>
+                                const _: () = { compile_error!(#msg); };
+                            });
+                        }
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+    if !uninterp_errors.is_empty() {
+        let mut error_items: Vec<Item> = Vec::new();
+        for ts in uninterp_errors {
+            if let Ok(item) = verus_syn::parse2::<Item>(ts) {
+                error_items.push(item);
+            }
+        }
+        // Strip markers from the existing items so they don't reach rustc as
+        // unknown attributes alongside our diagnostics, and don't fold into
+        // the engine block (which would re-trigger the engine error).
+        let mut sanitized = std::mem::take(items);
+        for item in &mut sanitized {
+            strip_attr_item(item, "pbt_provide");
+            strip_attr_item(item, "pbt");
+            if let Item::Impl(im) = item {
+                for ii in &mut im.items {
+                    if let ImplItem::Fn(f) = ii {
+                        strip_attr_impl_fn(f, "pbt");
+                        strip_attr_impl_fn(f, "pbt_provide");
+                    }
+                }
+            }
+        }
+        error_items.extend(sanitized);
+        *items = error_items;
+        return true;
+    }
 
     // 4. Partition: chosen indices (marker-stripped) → engine block; rest stay.
     let mut engine_items: Vec<Item> = Vec::new();

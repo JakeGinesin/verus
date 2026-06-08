@@ -140,7 +140,10 @@ fn classify(items: Vec<Item>) -> Classified {
                     spec_fn_names.insert(item_fn.sig.ident.to_string());
                     engine_items.push(item.clone());
                 }
-                FnMode::Default => {
+                // `fn` (default) and explicit `exec fn` both denote
+                // executable code. Either is valid as a contract-bearing
+                // target that the harness should sample and run.
+                FnMode::Default | FnMode::Exec(..) => {
                     let has_contract = item_fn.sig.spec.requires.is_some()
                         || item_fn.sig.spec.ensures.is_some();
                     if has_contract {
@@ -177,7 +180,10 @@ fn classify(items: Vec<Item>) -> Classified {
                             if matches!(impl_fn.sig.mode, FnMode::Spec(..)) {
                                 spec_fn_names.insert(impl_fn.sig.ident.to_string());
                                 spec_methods.push(ii.clone());
-                            } else if matches!(impl_fn.sig.mode, FnMode::Default) {
+                            } else if matches!(
+                                impl_fn.sig.mode,
+                                FnMode::Default | FnMode::Exec(..)
+                            ) {
                                 exec_methods.push(ii.clone());
                                 let has_contract = impl_fn.sig.spec.requires.is_some()
                                     || impl_fn.sig.spec.ensures.is_some();
@@ -705,12 +711,28 @@ enum ReturnShape {
     OwnedUserType(Ident),
 }
 
-fn classify_return(ret: &ReturnType, user_types: &HashSet<String>) -> Result<ReturnShape, Error> {
+fn classify_return(
+    ret: &ReturnType,
+    user_types: &HashSet<String>,
+    self_ty_for_method: Option<&Ident>,
+) -> Result<ReturnShape, Error> {
     let ty = match ret {
         ReturnType::Default => return Ok(ReturnShape::Unit),
         ReturnType::Type(_, _, _, ty) => ty,
     };
-    match ty.as_ref() {
+    // Substitute `Self` (capital-S identifier or `Self::...` path) with the
+    // concrete impl's Self type before classification. This is what lets a
+    // method written as `fn make() -> Self` be sampled and converted as the
+    // user type.
+    let mut owner;
+    let ty_ref: &Type = if let Some(self_ty) = self_ty_for_method {
+        owner = (**ty).clone();
+        replace_self_ty(&mut owner, self_ty);
+        &owner
+    } else {
+        ty.as_ref()
+    };
+    match ty_ref {
         Type::Path(tp) if tp.qself.is_none() && tp.path.segments.len() == 1 => {
             let seg = &tp.path.segments[0];
             let name = seg.ident.to_string();
@@ -735,11 +757,18 @@ fn classify_return(ret: &ReturnType, user_types: &HashSet<String>) -> Result<Ret
                         Ok(ReturnShape::OwnedUserType(seg.ident.clone()))
                     } else if is_primitive_like(&name) {
                         Ok(ReturnShape::Primitive)
+                    } else if name.chars().next().is_some_and(|c| c.is_uppercase()) {
+                        // External user type (defined + `#[pbt_provide]`'d in
+                        // another module). Same trait-resolved treatment as
+                        // a user type.
+                        Ok(ReturnShape::OwnedUserType(seg.ident.clone()))
                     } else {
                         Err(Error::new_spanned(
                             ty,
                             format!(
-                                "verus_pbt: unsupported return type `{}`.",
+                                "verus_pbt: unsupported return type `{}`. Supported: \
+primitives, `Vec<E>`, `Option<E>`, `HashMap<K, V>`, `HashSet<E>`, `Multiset<E>`, \
+and user-defined types (including `Self` inside an impl).",
                                 name
                             ),
                         ))
@@ -750,9 +779,36 @@ fn classify_return(ret: &ReturnType, user_types: &HashSet<String>) -> Result<Ret
         Type::Tuple(tt) if tt.elems.is_empty() => Ok(ReturnShape::Unit),
         _ => Err(Error::new_spanned(
             ty,
-            "verus_pbt: unsupported return type.",
+            "verus_pbt: unsupported return type. Supported: primitives, `Vec<E>`, \
+`Option<E>`, `HashMap<K, V>`, `HashSet<E>`, `Multiset<E>`, and user-defined types \
+(including `Self` inside an impl).",
         )),
     }
+}
+
+/// Replace every occurrence of the `Self` type (in `Type::Path`s) with the
+/// concrete impl Self type. Recurses into generic arguments, references,
+/// slices, and tuples.
+fn replace_self_ty(ty: &mut Type, self_ty: &Ident) {
+    use verus_syn::visit_mut::{self, VisitMut};
+    struct R<'a> {
+        self_ty: &'a Ident,
+    }
+    impl<'a> VisitMut for R<'a> {
+        fn visit_type_path_mut(&mut self, tp: &mut verus_syn::TypePath) {
+            // Replace a leading `Self` segment in a non-qualified path with the
+            // concrete type (works for `Self`, `Self::Item`, etc.).
+            if tp.qself.is_none() && !tp.path.segments.is_empty() {
+                if tp.path.segments[0].ident == "Self" {
+                    let span = tp.path.segments[0].ident.span();
+                    tp.path.segments[0].ident = Ident::new(&self.self_ty.to_string(), span);
+                }
+            }
+            visit_mut::visit_type_path_mut(self, tp);
+        }
+    }
+    let mut r = R { self_ty };
+    r.visit_type_mut(ty);
 }
 
 // ---------------------------------------------------------------------------
@@ -791,32 +847,41 @@ impl<'a> VisitMut for ContractRewriter<'a> {
             return;
         }
 
-        // 1. Strip `<expr>.deep_view()`.
-        if let Expr::MethodCall(ExprMethodCall { receiver, method, args, .. }) = expr {
-            if method == "deep_view" && args.is_empty() {
-                let receiver_clone = (**receiver).clone();
-
-                // Return-named ident: re-shape per ReturnShape.
-                if let Some(ret_ident) = &self.return_ident {
-                    if expr_is_ident(&receiver_clone, ret_ident) {
-                        *expr = self.rewrite_return_deep_view(ret_ident.clone());
-                        return;
-                    }
-                }
-
-                // Parameter ident: substitute the registered call form.
-                if let Some(name) = ident_of_expr(&receiver_clone) {
-                    if let Some(call_form) = self.param_call_form.get(&name) {
-                        let cf = call_form.clone();
-                        *expr = verus_syn::parse_quote!( #cf );
-                        return;
-                    }
-                }
-
-                // Otherwise: just unwrap to the receiver (best-effort).
-                *expr = receiver_clone;
-                return;
+        // 1. Strip `<expr>.deep_view()` or `<expr>@` (Verus's `View`-postfix
+        // shorthand). Both denote the same spec view: in Verus, `s@` parses
+        // as `Expr::View { expr: s }` and is semantically equivalent to
+        // `s.deep_view()` for the purpose of contract evaluation. Treat them
+        // identically in the harness rewriter.
+        let view_receiver: Option<Expr> = match expr {
+            Expr::MethodCall(ExprMethodCall { receiver, method, args, .. })
+                if method == "deep_view" && args.is_empty() =>
+            {
+                Some((**receiver).clone())
             }
+            Expr::View(v) => Some((*v.expr).clone()),
+            _ => None,
+        };
+        if let Some(receiver_clone) = view_receiver {
+            // Return-named ident: re-shape per ReturnShape.
+            if let Some(ret_ident) = &self.return_ident {
+                if expr_is_ident(&receiver_clone, ret_ident) {
+                    *expr = self.rewrite_return_deep_view(ret_ident.clone());
+                    return;
+                }
+            }
+
+            // Parameter ident: substitute the registered call form.
+            if let Some(name) = ident_of_expr(&receiver_clone) {
+                if let Some(call_form) = self.param_call_form.get(&name) {
+                    let cf = call_form.clone();
+                    *expr = verus_syn::parse_quote!( #cf );
+                    return;
+                }
+            }
+
+            // Otherwise: just unwrap to the receiver (best-effort).
+            *expr = receiver_clone;
+            return;
         }
 
         // 2. Rename `f(args)` to `exec_f(args)` when `f` is a known spec fn.
@@ -1657,6 +1722,99 @@ struct HarnessOutput {
     synthetic_spec_fns: Vec<TokenStream2>,
 }
 
+/// For a `ParamShape::OwnedVec(elem)` or `ParamShape::Slice(elem)`, build a
+/// proptest element strategy producing the element type the harness samples
+/// (the user's type for user-defined elements). Returns None for shapes that
+/// aren't sized by a `len()` precondition.
+fn element_strategy_for_shape(shape: &ParamShape) -> Option<TokenStream2> {
+    let elem = match shape {
+        ParamShape::OwnedVec(e) | ParamShape::Slice(e) => e,
+        _ => return None,
+    };
+    let elem_ty = match elem {
+        ParamElem::Primitive(t) => quote! { #t },
+        ParamElem::UserType(n) => quote! { #n },
+    };
+    Some(quote! { <#elem_ty as ::verus_pbt_runtime::PbtStrategy>::pbt_strategy() })
+}
+
+/// Scan a function's `requires` clauses for patterns of the shape
+/// `<param>@.len() == <const>` (and the equivalent `<param>.deep_view().len()
+/// == <const>`), returning a map from parameter name to the required length.
+/// Handles either side of `==`. Used to pre-size collection strategies in the
+/// harness so `prop_assume!` doesn't reject most samples.
+fn scan_fixed_length_constraints(sig: &verus_syn::Signature) -> HashMap<String, usize> {
+    use verus_syn::{BinOp, ExprBinary, ExprLit, Lit};
+    let mut out: HashMap<String, usize> = HashMap::new();
+    let Some(req) = &sig.spec.requires else {
+        return out;
+    };
+
+    // Match `<param>@.len()` or `<param>.deep_view().len()`, returning the
+    // param name. Conservative: bare ident only (no field access, no chained
+    // method calls).
+    fn extract_param_len(expr: &Expr) -> Option<String> {
+        // Outer must be `.len()` with no args.
+        let Expr::MethodCall(mc) = expr else {
+            return None;
+        };
+        if mc.method != "len" || !mc.args.is_empty() {
+            return None;
+        }
+        // Inner must be either `s@` (Expr::View) or `s.deep_view()`.
+        match mc.receiver.as_ref() {
+            Expr::View(v) => ident_of_expr(&v.expr),
+            Expr::MethodCall(inner)
+                if inner.method == "deep_view" && inner.args.is_empty() =>
+            {
+                ident_of_expr(&inner.receiver)
+            }
+            _ => None,
+        }
+    }
+
+    fn extract_usize_lit(expr: &Expr) -> Option<usize> {
+        if let Expr::Lit(ExprLit { lit: Lit::Int(li), .. }) = expr {
+            li.base10_parse::<usize>().ok()
+        } else {
+            None
+        }
+    }
+
+    fn walk(e: &Expr, out: &mut HashMap<String, usize>) {
+        match e {
+            Expr::Binary(ExprBinary { op: BinOp::Eq(_), left, right, .. }) => {
+                if let (Some(name), Some(n)) =
+                    (extract_param_len(left), extract_usize_lit(right))
+                {
+                    out.entry(name).or_insert(n);
+                }
+                if let (Some(name), Some(n)) =
+                    (extract_param_len(right), extract_usize_lit(left))
+                {
+                    out.entry(name).or_insert(n);
+                }
+            }
+            Expr::Binary(ExprBinary { op: BinOp::And(_), left, right, .. }) => {
+                walk(left, out);
+                walk(right, out);
+            }
+            Expr::BigAnd(b) => {
+                for inner in &b.exprs {
+                    walk(&inner.expr, out);
+                }
+            }
+            Expr::Paren(p) => walk(&p.expr, out),
+            _ => {}
+        }
+    }
+
+    for e in req.exprs.exprs.iter() {
+        walk(e, &mut out);
+    }
+    out
+}
+
 fn emit_harness(
     target: &ContractTarget,
     spec_fn_names: &HashSet<String>,
@@ -1733,7 +1891,16 @@ fn emit_harness(
                         ));
                     }
                 };
-                let shape = classify_param_type(&pat_type.ty, user_types)?;
+                let mut owner_ty;
+                let ty_for_classify: &Type = if let Some(self_ty) = self_ty_for_method.as_ref()
+                {
+                    owner_ty = (*pat_type.ty).clone();
+                    replace_self_ty(&mut owner_ty, self_ty);
+                    &owner_ty
+                } else {
+                    pat_type.ty.as_ref()
+                };
+                let shape = classify_param_type(ty_for_classify, user_types)?;
                 param_idents.push(ident);
                 param_shapes.push(shape);
             }
@@ -1752,7 +1919,7 @@ fn emit_harness(
     let _ = &self_ident;
 
     // 3. Return shape and ident.
-    let return_shape = classify_return(&sig.output, user_types)?;
+    let return_shape = classify_return(&sig.output, user_types, self_ty_for_method.as_ref())?;
     let return_ident = match target {
         ContractTarget::FreeFn(item_fn) => return_ident_of(item_fn),
         ContractTarget::Method { method, .. } => {
@@ -1873,11 +2040,25 @@ fn emit_harness(
     }
 
     // 6. Build the proptest harness body.
+    // Pre-scan the requires for fixed-length constraints on collection params.
+    // Patterns like `s@.len() == 4` (or `s.deep_view().len() == 4`) are common
+    // for binary parsing/serialization APIs and would otherwise cause proptest
+    // to reject ~all sampled inputs (default Vec strategy is 0..=16).
+    let fixed_lengths: HashMap<String, usize> = scan_fixed_length_constraints(sig);
     let strategy_decls: Vec<TokenStream2> = param_idents
         .iter()
         .zip(param_shapes.iter())
         .map(|(id, shape)| {
             let ty = shape.harness_type();
+            // For Vec<T> / Slice<T> params with a fixed-length precondition,
+            // sample exactly that length so prop_assume! never rejects.
+            if let Some(&len) = fixed_lengths.get(&id.to_string()) {
+                if let Some(elem_strategy) = element_strategy_for_shape(shape) {
+                    return quote! {
+                        #id in ::proptest::collection::vec(#elem_strategy, #len..=#len)
+                    };
+                }
+            }
             quote! { #id in ::verus_pbt_runtime::pbt_strategy::<#ty>() }
         })
         .collect();
