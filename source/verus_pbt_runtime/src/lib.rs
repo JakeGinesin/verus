@@ -110,6 +110,13 @@ impl_primitive!(
     bool, char, u8, u16, u32, u64, u128, usize, i8, i16, i32, i64, i128, isize,
 );
 
+// Float strategies. proptest's default `any::<f32>()` / `any::<f64>()`
+// includes NaN / +inf / -inf / subnormals, which is exactly what users want
+// when they're testing IEEE-aware contracts. Contract clauses comparing
+// floats with `==` will (correctly) flake on NaN; users who want NaN-free
+// strategies can shrink the strategy on their `#[pbt_provide]` site.
+impl_primitive!(f32, f64);
+
 impl<T: PbtStrategy + Debug + 'static> PbtStrategy for Vec<T>
 where
     <T as PbtStrategy>::Strategy: 'static,
@@ -181,4 +188,49 @@ where
     <T as PbtStrategy>::Strategy: 'static,
 {
     hash_map(T::pbt_strategy(), 0usize..=count_max as usize, 0..=DEFAULT_COLLECTION_MAX).boxed()
+}
+
+
+// ---------------------------------------------------------------------------
+// Sequence-update helper used by the harness contract rewriter for
+// `Seq::update` lowering. Keeping it as a free fn (rather than inlining a
+// block expression) makes the rewritten contract a flat call expression,
+// which avoids tripping `proptest::prop_assert!`'s format-string parser on
+// `{ ... }` block syntax inside the asserted expression.
+#[doc(hidden)]
+pub fn __pbt_seq_update<T>(mut v: Vec<T>, i: usize, x: T) -> Vec<T> {
+    v[i] = x;
+    v
+}
+
+// ---------------------------------------------------------------------------
+// String-to-Vec<char> bridge used by the harness contract rewriter for
+// `&str` / `String` deep_view. Same rationale as `__pbt_seq_update`:
+// keeping the rewritten clause a flat call expression sidesteps proptest's
+// format-string parser on `{ ... }` blocks.
+#[doc(hidden)]
+pub fn __pbt_str_chars(s: &str) -> Vec<char> {
+    s.chars().collect()
+}
+
+// Slice-concat helper used by the harness contract rewriter for the
+// `seq + seq` Verus form (which lowers to `Vec<T>` concatenation in the
+// runtime form). Cloning is required because the underlying values flow
+// from `&[T]` slice projections.
+#[doc(hidden)]
+pub fn __pbt_seq_concat<T: Clone>(a: &[T], b: &[T]) -> Vec<T> {
+    let mut out = Vec::with_capacity(a.len() + b.len());
+    out.extend_from_slice(a);
+    out.extend_from_slice(b);
+    out
+}
+
+// Sequence-push helper used by the harness contract rewriter for the
+// `Seq::push` method form. Same rationale as `__pbt_seq_update` /
+// `__pbt_seq_concat`: flat call expression sidesteps proptest's
+// format-string parser on `{ ... }` blocks.
+#[doc(hidden)]
+pub fn __pbt_seq_push<T>(mut v: Vec<T>, x: T) -> Vec<T> {
+    v.push(x);
+    v
 }

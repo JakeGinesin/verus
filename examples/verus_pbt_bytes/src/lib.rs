@@ -1,13 +1,13 @@
-//! PBT experiment: verus_pbt's `#[pbt]` markers applied to a copy of the
-//! integer / little-endian byte conversion functions from `vstd::bytes`.
-//!
-//! The spec layer is byte-for-byte the upstream definitions (closed/open
-//! spec fns) and the `external_body` exec wrappers around stdlib's
-//! `u<n>::from_le_bytes` / `to_le_bytes`. Each `#[pbt]`-tagged exec fn
-//! produces a proptest harness comparing the trusted exec body's output to
-//! the engine-lowered `exec_spec_*` companion of the spec fn. A drift
-//! between the spec and the trusted body shows up as a proptest failure
-//! with a concrete byte sequence as the counterexample.
+// PBT experiment: verus_pbt's `#[pbt]` markers applied to a copy of the
+// integer / little-endian byte conversion functions from `vstd::bytes`.
+//
+// The spec layer is byte-for-byte the upstream definitions (closed/open
+// spec fns) and the `external_body` exec wrappers around stdlib's
+// `u<n>::from_le_bytes` / `to_le_bytes`. Each `#[pbt]`-tagged exec fn
+// produces a proptest harness comparing the trusted exec body's output to
+// the engine-lowered `exec_spec_*` companion of the spec fn. A drift
+// between the spec and the trusted body shows up as a proptest failure
+// with a concrete byte sequence as the counterexample.
 
 #[allow(unused_imports)]
 use vstd::contrib::exec_spec::*;
@@ -36,9 +36,6 @@ pub closed spec fn spec_u16_to_le_bytes(x: u16) -> Seq<u8> {
     ]
 }
 
-// spec -> verified impl (if there are no bad patterns in the spec, i.e. Seq.all)
-// verified_impl -> output ... ensures output == spec
-
 #[pbt]
 #[verifier::external_body]
 pub exec fn u16_from_le_bytes(s: &[u8]) -> (x: u16)
@@ -46,7 +43,7 @@ pub exec fn u16_from_le_bytes(s: &[u8]) -> (x: u16)
     ensures x == spec_u16_from_le_bytes(s@),
 {
     use core::convert::TryInto;
-    u16::from_be_bytes(s.try_into().unwrap())
+    u16::from_le_bytes(s.try_into().unwrap())
 }
 
 #[pbt]
@@ -63,14 +60,14 @@ pub exec fn u16_to_le_bytes(x: u16) -> (r: Vec<u8>)
 // u32 — little-endian
 // ---------------------------------------------------------------------------
 
-#[pbt_provide]
+// #[pbt_provide]
 pub closed spec fn spec_u32_from_le_bytes(s: Seq<u8>) -> u32
     recommends s.len() == 4,
 {
     (s[0] as u32) | (s[1] as u32) << 8 | (s[2] as u32) << 16 | (s[3] as u32) << 24
 }
 
-#[pbt_provide]
+// #[pbt_provide]
 pub closed spec fn spec_u32_to_le_bytes(x: u32) -> Seq<u8> {
     seq![
         (x & 0xff) as u8,
@@ -105,7 +102,7 @@ pub exec fn u32_to_le_bytes(x: u32) -> (r: Vec<u8>)
 // u64 — little-endian
 // ---------------------------------------------------------------------------
 
-#[pbt_provide]
+// #[pbt_provide]
 pub closed spec fn spec_u64_from_le_bytes(s: Seq<u8>) -> u64
     recommends s.len() == 8,
 {
@@ -114,7 +111,7 @@ pub closed spec fn spec_u64_from_le_bytes(s: Seq<u8>) -> u64
         | (s[7] as u64) << 56
 }
 
-#[pbt_provide]
+// #[pbt_provide]
 pub closed spec fn spec_u64_to_le_bytes(x: u64) -> Seq<u8> {
     seq![
         (x & 0xff) as u8,
@@ -152,7 +149,7 @@ pub exec fn u64_to_le_bytes(x: u64) -> (r: Vec<u8>)
 // u128 — little-endian
 // ---------------------------------------------------------------------------
 
-#[pbt_provide]
+// #[pbt_provide]
 pub closed spec fn spec_u128_from_le_bytes(s: Seq<u8>) -> u128
     recommends s.len() == 16,
 {
@@ -163,7 +160,7 @@ pub closed spec fn spec_u128_from_le_bytes(s: Seq<u8>) -> u128
         | (s[13] as u128) << 104 | (s[14] as u128) << 112 | (s[15] as u128) << 120
 }
 
-#[pbt_provide]
+// #[pbt_provide]
 pub closed spec fn spec_u128_to_le_bytes(x: u128) -> Seq<u8> {
     seq![
         (x & 0xff) as u8,
