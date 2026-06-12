@@ -2040,11 +2040,11 @@ or impl method instead.",
         let mut sanitized = std::mem::take(items);
         for item in &mut sanitized {
             strip_attr_item(item, "pbt_provide");
-            strip_attr_item(item, "pbt");
+            strip_attr_item(item, "pbt"); strip_attr_item(item, "pbt_cov_mutate");
             if let Item::Impl(im) = item {
                 for ii in &mut im.items {
                     if let ImplItem::Fn(f) = ii {
-                        strip_attr_impl_fn(f, "pbt");
+                        strip_attr_impl_fn(f, "pbt"); strip_attr_impl_fn(f, "pbt_cov_mutate");
                         strip_attr_impl_fn(f, "pbt_provide");
                     }
                 }
@@ -2334,11 +2334,11 @@ the instantiation locally.",
         let mut sanitized = std::mem::take(items);
         for item in &mut sanitized {
             strip_attr_item(item, "pbt_provide");
-            strip_attr_item(item, "pbt");
+            strip_attr_item(item, "pbt"); strip_attr_item(item, "pbt_cov_mutate");
             if let Item::Impl(im) = item {
                 for ii in &mut im.items {
                     if let ImplItem::Fn(f) = ii {
-                        strip_attr_impl_fn(f, "pbt");
+                        strip_attr_impl_fn(f, "pbt"); strip_attr_impl_fn(f, "pbt_cov_mutate");
                         strip_attr_impl_fn(f, "pbt_provide");
                     }
                 }
@@ -2446,11 +2446,11 @@ contract reaches `{name}`, and the instantiation will be inherited automatically
         let mut sanitized = std::mem::take(items);
         for item in &mut sanitized {
             strip_attr_item(item, "pbt_provide");
-            strip_attr_item(item, "pbt");
+            strip_attr_item(item, "pbt"); strip_attr_item(item, "pbt_cov_mutate");
             if let Item::Impl(im) = item {
                 for ii in &mut im.items {
                     if let ImplItem::Fn(f) = ii {
-                        strip_attr_impl_fn(f, "pbt");
+                        strip_attr_impl_fn(f, "pbt"); strip_attr_impl_fn(f, "pbt_cov_mutate");
                         strip_attr_impl_fn(f, "pbt_provide");
                     }
                 }
@@ -2511,11 +2511,11 @@ contract reaches `{name}`, and the instantiation will be inherited automatically
         let mut sanitized = std::mem::take(items);
         for item in &mut sanitized {
             strip_attr_item(item, "pbt_provide");
-            strip_attr_item(item, "pbt");
+            strip_attr_item(item, "pbt"); strip_attr_item(item, "pbt_cov_mutate");
             if let Item::Impl(im) = item {
                 for ii in &mut im.items {
                     if let ImplItem::Fn(f) = ii {
-                        strip_attr_impl_fn(f, "pbt");
+                        strip_attr_impl_fn(f, "pbt"); strip_attr_impl_fn(f, "pbt_cov_mutate");
                         strip_attr_impl_fn(f, "pbt_provide");
                     }
                 }
@@ -2556,6 +2556,11 @@ contract reaches `{name}`, and the instantiation will be inherited automatically
                     if let ImplItem::Fn(f) = ii {
                         strip_attr_impl_fn(f, "pbt");
                         strip_attr_impl_fn(f, "pbt_provide");
+                        // NOTE: deliberately do NOT strip `pbt_cov_mutate`
+                        // from items going to the engine. The verus_pbt
+                        // classify step inside the engine block needs the
+                        // attribute to capture metadata; it strips after
+                        // capture.
                     }
                 }
             }
@@ -2578,7 +2583,7 @@ contract reaches `{name}`, and the instantiation will be inherited automatically
             if let Item::Impl(im) = &mut item {
                 for ii in &mut im.items {
                     if let ImplItem::Fn(f) = ii {
-                        strip_attr_impl_fn(f, "pbt");
+                        strip_attr_impl_fn(f, "pbt"); strip_attr_impl_fn(f, "pbt_cov_mutate");
                         strip_attr_impl_fn(f, "pbt_provide");
                     }
                 }

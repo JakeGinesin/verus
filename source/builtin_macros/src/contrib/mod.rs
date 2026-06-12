@@ -1,7 +1,9 @@
 pub mod auto_spec;
 pub mod exec_spec;
 pub mod external_pbt_provide;
+pub mod pbt_assert;
 pub mod pbt_attr;
+pub mod pbt_mutator;
 pub mod set_build;
 pub mod spec_derive;
 pub mod verus_pbt;

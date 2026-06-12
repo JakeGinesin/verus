@@ -111,6 +111,63 @@ struct Classified {
     /// rewriter consults this when emitting `exec_<...>` calls so a runtime
     /// fn marked as a spec proxy lowers to the right companion.
     when_used_as_spec_redirect: HashMap<String, String>,
+    /// Functions marked `#[pbt_cov_mutate]` whose ensures-clause coverage
+    /// is to be assessed via `cargo-mutants`. Each entry records enough
+    /// metadata for the runtime runner to scope mutations to that fn's
+    /// body and run only its harness.
+    cov_mutate_targets: Vec<CovMutateTarget>,
+    /// `#[pbt]`-marked inline asserts found inside the bodies of any
+    /// `#[pbt]`-able fn. Each target carries enough info for the harness
+    /// emitter to either rewrite the parallel fn (path-form) or build a
+    /// standalone `#[test]` (forall-form).
+    inline_assert_targets: Vec<InlineAssertContext>,
+}
+
+/// Pairing of an `InlineAssertTarget` with the enclosing fn's
+/// `ContractTarget`. The harness emitter needs both: the target tells
+/// it what to test, and the enclosing fn provides the parameter
+/// strategies for the path-form harness.
+#[derive(Clone)]
+struct InlineAssertContext {
+    target: super::pbt_assert::InlineAssertTarget,
+    /// `Some(_)` for path-form (which needs the enclosing fn to drive),
+    /// `None` for forall-form (which is self-contained — sample binders,
+    /// evaluate predicate, no fn run).
+    enclosing: Option<ContractTarget>,
+}
+
+/// Metadata for a `#[pbt_cov_mutate]` target. Captured at macro time and
+/// flowed through to `expand`'s cov_mutate emission step.
+#[derive(Clone, Debug)]
+struct CovMutateTarget {
+    /// Display name (qualified for impl methods, e.g. `Counter::step`).
+    fn_name: String,
+    /// Bare function ident (matches the source) — used to scope mutant
+    /// fn naming.
+    fn_ident: String,
+    /// Optional kill-rate threshold (0..=100). When set and the kill rate
+    /// falls below it, the report test panics so `cargo test` fails.
+    threshold: Option<u8>,
+    /// Optional skip flag. When set, the runner records the target but
+    /// does not run any mutants. Useful for muting one fn temporarily
+    /// without removing the attribute (which would change the per-crate
+    /// target list).
+    skip: bool,
+    /// For free fns: cloned `ItemFn`; for impl methods: `(self_ty,
+    /// ImplItemFn)`. The mutator pulls the body from here at expand
+    /// time.
+    body_source: CovMutateBodySource,
+}
+
+/// Original source from which to enumerate mutation sites and emit
+/// parallel `__pbt_mutant_*` fns.
+#[derive(Clone, Debug)]
+enum CovMutateBodySource {
+    FreeFn(verus_syn::ItemFn),
+    Method {
+        self_ty: Ident,
+        method: verus_syn::ImplItemFn,
+    },
 }
 
 /// Extract the spec-fn target from a `#[verifier::when_used_as_spec(spec_X)]`
@@ -151,6 +208,173 @@ fn macro_path_is_external_provide(path: &verus_syn::Path) -> bool {
     )
 }
 
+// ---------------------------------------------------------------------------
+// `#[pbt_cov_mutate]` attribute detection
+// ---------------------------------------------------------------------------
+
+/// Returns `true` if `attr` is a `#[pbt_cov_mutate]` (or qualified variant)
+/// marker. The attribute may be bare (`#[pbt_cov_mutate]`) or carry a
+/// parenthesized config like `#[pbt_cov_mutate(threshold = 90)]` or
+/// `#[pbt_cov_mutate(skip)]`.
+fn attr_is_pbt_cov_mutate(attr: &verus_syn::Attribute) -> bool {
+    let path = attr.path();
+    if path.leading_colon.is_some() {
+        return false;
+    }
+    let segs: Vec<String> = path.segments.iter().map(|s| s.ident.to_string()).collect();
+    let segs: Vec<&str> = segs.iter().map(|s| s.as_str()).collect();
+    matches!(
+        &segs[..],
+        ["pbt_cov_mutate"]
+            | ["contrib", "pbt_cov_mutate"]
+            | ["vstd", "contrib", "pbt_cov_mutate"]
+    )
+}
+
+/// Parsed options on a `#[pbt_cov_mutate(...)]` attribute. All fields are
+/// optional. Unparseable args are silently ignored — the report runner is
+/// informational by default and the attribute should never break a build.
+#[derive(Clone, Debug, Default)]
+struct CovMutateAttrOpts {
+    threshold: Option<u8>,
+    skip: bool,
+}
+
+/// Parse `#[pbt_cov_mutate]` / `#[pbt_cov_mutate(threshold = 90)]` /
+/// `#[pbt_cov_mutate(skip)]`. Returns `None` if the attribute is not a
+/// cov_mutate marker. Returns `Some(default)` for the bare form.
+fn parse_pbt_cov_mutate_attr(attr: &verus_syn::Attribute) -> Option<CovMutateAttrOpts> {
+    if !attr_is_pbt_cov_mutate(attr) {
+        return None;
+    }
+    let mut opts = CovMutateAttrOpts::default();
+    let tokens = match &attr.meta {
+        verus_syn::Meta::Path(_) => return Some(opts),
+        verus_syn::Meta::List(list) => list.tokens.clone(),
+        // `#[pbt_cov_mutate = ...]` is not the supported shape; ignore.
+        verus_syn::Meta::NameValue(_) => return Some(opts),
+    };
+    use verus_syn::parse::Parser;
+    use verus_syn::punctuated::Punctuated;
+    use verus_syn::Token;
+
+    enum CovMutateArg {
+        Threshold(u8),
+        Skip,
+    }
+    impl verus_syn::parse::Parse for CovMutateArg {
+        fn parse(input: verus_syn::parse::ParseStream) -> verus_syn::parse::Result<Self> {
+            let key: Ident = input.parse()?;
+            match key.to_string().as_str() {
+                "skip" => Ok(CovMutateArg::Skip),
+                "threshold" => {
+                    let _eq: Token![=] = input.parse()?;
+                    let lit: verus_syn::LitInt = input.parse()?;
+                    let n: u64 = lit.base10_parse()?;
+                    if n > 100 {
+                        return Err(verus_syn::Error::new_spanned(
+                            lit,
+                            "verus_pbt: pbt_cov_mutate threshold must be 0..=100",
+                        ));
+                    }
+                    Ok(CovMutateArg::Threshold(n as u8))
+                }
+                other => Err(verus_syn::Error::new_spanned(
+                    key,
+                    format!(
+                        "verus_pbt: unrecognized pbt_cov_mutate option `{other}`. \
+Supported: `skip`, `threshold = <0..=100>`."
+                    ),
+                )),
+            }
+        }
+    }
+
+    let parser = |s: verus_syn::parse::ParseStream| {
+        Punctuated::<CovMutateArg, Token![,]>::parse_terminated(s)
+    };
+    if let Ok(args) = parser.parse2(tokens) {
+        for a in args {
+            match a {
+                CovMutateArg::Threshold(n) => opts.threshold = Some(n),
+                CovMutateArg::Skip => opts.skip = true,
+            }
+        }
+    }
+    Some(opts)
+}
+
+/// Returns the parsed cov_mutate options for an item, or `None` if the
+/// attribute is absent.
+fn item_cov_mutate_opts(item: &Item) -> Option<CovMutateAttrOpts> {
+    let attrs = item_attrs(item)?;
+    attrs.iter().find_map(parse_pbt_cov_mutate_attr)
+}
+
+/// Same as `item_cov_mutate_opts` but for an `ImplItemFn`.
+fn impl_fn_cov_mutate_opts(f: &verus_syn::ImplItemFn) -> Option<CovMutateAttrOpts> {
+    f.attrs.iter().find_map(parse_pbt_cov_mutate_attr)
+}
+
+/// Strip every `#[pbt_cov_mutate]` (and qualified variants) attribute from
+/// an item. Called after metadata capture so the post-classify items are
+/// valid Verus syntax.
+fn strip_cov_mutate_attr_item(item: &mut Item) {
+    if let Some(attrs) = item_attrs_mut(item) {
+        attrs.retain(|a| !attr_is_pbt_cov_mutate(a));
+    }
+}
+
+fn strip_cov_mutate_attr_impl_fn(f: &mut verus_syn::ImplItemFn) {
+    f.attrs.retain(|a| !attr_is_pbt_cov_mutate(a));
+}
+
+/// Recover an item's mutable attribute list. Mirrors `item_attrs` from the
+/// `pbt_attr` module but is duplicated here to avoid a cross-module
+/// import; the read-only `item_attrs` is already used elsewhere in this
+/// file via the path shown.
+fn item_attrs(item: &Item) -> Option<&Vec<verus_syn::Attribute>> {
+    match item {
+        Item::Const(i) => Some(&i.attrs),
+        Item::Enum(i) => Some(&i.attrs),
+        Item::ExternCrate(i) => Some(&i.attrs),
+        Item::Fn(i) => Some(&i.attrs),
+        Item::ForeignMod(i) => Some(&i.attrs),
+        Item::Impl(i) => Some(&i.attrs),
+        Item::Macro(i) => Some(&i.attrs),
+        Item::Mod(i) => Some(&i.attrs),
+        Item::Static(i) => Some(&i.attrs),
+        Item::Struct(i) => Some(&i.attrs),
+        Item::Trait(i) => Some(&i.attrs),
+        Item::TraitAlias(i) => Some(&i.attrs),
+        Item::Type(i) => Some(&i.attrs),
+        Item::Union(i) => Some(&i.attrs),
+        Item::Use(i) => Some(&i.attrs),
+        _ => None,
+    }
+}
+
+fn item_attrs_mut(item: &mut Item) -> Option<&mut Vec<verus_syn::Attribute>> {
+    match item {
+        Item::Const(i) => Some(&mut i.attrs),
+        Item::Enum(i) => Some(&mut i.attrs),
+        Item::ExternCrate(i) => Some(&mut i.attrs),
+        Item::Fn(i) => Some(&mut i.attrs),
+        Item::ForeignMod(i) => Some(&mut i.attrs),
+        Item::Impl(i) => Some(&mut i.attrs),
+        Item::Macro(i) => Some(&mut i.attrs),
+        Item::Mod(i) => Some(&mut i.attrs),
+        Item::Static(i) => Some(&mut i.attrs),
+        Item::Struct(i) => Some(&mut i.attrs),
+        Item::Trait(i) => Some(&mut i.attrs),
+        Item::TraitAlias(i) => Some(&mut i.attrs),
+        Item::Type(i) => Some(&mut i.attrs),
+        Item::Union(i) => Some(&mut i.attrs),
+        Item::Use(i) => Some(&mut i.attrs),
+        _ => None,
+    }
+}
+
 fn classify(items: Vec<Item>) -> Classified {
     let mut passthrough_items = Vec::new();
     let mut engine_items = Vec::new();
@@ -160,6 +384,7 @@ fn classify(items: Vec<Item>) -> Classified {
     let mut contract_targets: Vec<ContractTarget> = Vec::new();
     let mut external_provide_bodies: Vec<TokenStream2> = Vec::new();
     let mut when_used_as_spec_redirect: HashMap<String, String> = HashMap::new();
+    let mut cov_mutate_targets: Vec<CovMutateTarget> = Vec::new();
 
     // First pass: collect when_used_as_spec mappings before classifying so
     // contract rewrites for any item see the full redirect map.
@@ -200,6 +425,27 @@ fn classify(items: Vec<Item>) -> Classified {
                     if has_contract {
                         contract_targets.push(ContractTarget::FreeFn(item_fn.clone()));
                     }
+                    // Capture #[pbt_cov_mutate] metadata before moving the
+                    // item into passthrough_items. We snapshot the fn ident
+                    // and opts now so we can stop borrowing `item` before
+                    // the move below.
+                    let cov_meta = item_cov_mutate_opts(&item).map(|opts| {
+                        let fn_ident = item_fn.sig.ident.to_string();
+                        CovMutateTarget {
+                            fn_name: fn_ident.clone(),
+                            fn_ident: fn_ident.clone(),
+                            threshold: opts.threshold,
+                            skip: opts.skip,
+                            body_source: CovMutateBodySource::FreeFn(item_fn.clone()),
+                        }
+                    });
+                    let mut item = item;
+                    if let Some(target) = cov_meta {
+                        cov_mutate_targets.push(target);
+                        // Strip the attr so Verus doesn't see an unknown
+                        // attribute downstream.
+                        strip_cov_mutate_attr_item(&mut item);
+                    }
                     passthrough_items.push(item);
                 }
                 _ => {
@@ -235,14 +481,39 @@ fn classify(items: Vec<Item>) -> Classified {
                                 impl_fn.sig.mode,
                                 FnMode::Default | FnMode::Exec(..)
                             ) {
-                                exec_methods.push(ii.clone());
+                                let mut method_clone = impl_fn.clone();
+                                let cov_opts = impl_fn_cov_mutate_opts(&method_clone);
+                                if let Some(opts) = cov_opts {
+                                    if let Some(self_ty) = self_ty_ident.clone() {
+                                        let fn_ident_s =
+                                            method_clone.sig.ident.to_string();
+                                        let self_ty_s = self_ty.to_string();
+                                        cov_mutate_targets.push(CovMutateTarget {
+                                            fn_name: format!(
+                                                "{}::{}",
+                                                self_ty_s, fn_ident_s
+                                            ),
+                                            fn_ident: fn_ident_s.clone(),
+                                            threshold: opts.threshold,
+                                            skip: opts.skip,
+                                            body_source: CovMutateBodySource::Method {
+                                                self_ty: self_ty.clone(),
+                                                method: impl_fn.clone(),
+                                            },
+                                        });
+                                    }
+                                    strip_cov_mutate_attr_impl_fn(&mut method_clone);
+                                }
+                                exec_methods.push(verus_syn::ImplItem::Fn(
+                                    method_clone.clone(),
+                                ));
                                 let has_contract = impl_fn.sig.spec.requires.is_some()
                                     || impl_fn.sig.spec.ensures.is_some();
                                 if has_contract {
                                     if let Some(self_ty) = self_ty_ident.clone() {
                                         contract_targets.push(ContractTarget::Method {
                                             self_ty,
-                                            method: impl_fn.clone(),
+                                            method: method_clone,
                                         });
                                     }
                                     // If we can't resolve Self type, the
@@ -267,8 +538,15 @@ fn classify(items: Vec<Item>) -> Classified {
                     // Pure spec impl → engine.
                     engine_items.push(item);
                 } else if spec_methods.is_empty() {
-                    // Pure exec / other impl → passthrough.
-                    passthrough_items.push(item);
+                    // Pure exec (no spec methods): build the impl from
+                    // `exec_methods + other_items` rather than the original
+                    // `item` so per-method modifications (e.g. stripping
+                    // `#[pbt_cov_mutate]` after metadata capture) are
+                    // preserved.
+                    let mut all = exec_methods;
+                    all.extend(other_items);
+                    let exec_only = make_impl_with(all);
+                    passthrough_items.push(Item::Impl(exec_only));
                 } else {
                     // Mixed: split.
                     let spec_only = make_impl_with(spec_methods);
@@ -300,6 +578,46 @@ fn classify(items: Vec<Item>) -> Classified {
         }
     }
 
+    // After all items are classified, walk the passthrough items'
+    // bodies looking for `#[pbt]`-marked inline asserts. The walker
+    // both collects targets and strips the `#[pbt]` attribute (so the
+    // verifier doesn't choke on an unknown attribute when the items
+    // are re-emitted). Errors here are accumulated into the result
+    // `Classified` and surfaced by the caller as compile errors.
+    let mut inline_assert_targets: Vec<InlineAssertContext> = Vec::new();
+    let mut inline_assert_errors: Vec<Error> = Vec::new();
+    discover_inline_asserts_in_items(
+        &mut passthrough_items,
+        &contract_targets,
+        &mut inline_assert_targets,
+        &mut inline_assert_errors,
+    );
+
+    // The `contract_targets` clones above were taken before the
+    // discovery pass stripped `#[pbt]` from the asserts in
+    // `passthrough_items`. Rebuild the matching entries from the now-
+    // stripped `passthrough_items` so the checker fn we emit later
+    // doesn't re-introduce the marker. (The checker fn is built by
+    // re-emitting the enclosing fn's body via `emit_mutant_fn_*`, so a
+    // stale `#[pbt]` on the assert would leak through and the
+    // verifier would reject it.)
+    refresh_contract_targets_from_items(
+        &passthrough_items,
+        &mut contract_targets,
+    );
+
+    // We surface inline-assert errors by attaching them to the first
+    // affected target's span. They cause the macro to emit
+    // compile_error! at the harness emission step. Currently the
+    // simpler approach is to package them into the `passthrough_items`
+    // unchanged — they show up at expand time. For now, drop a
+    // compile_error per error into the engine_items so the user sees
+    // it as a build failure with the right span.
+    for err in &inline_assert_errors {
+        let ts = err.to_compile_error();
+        engine_items.push(verus_syn::Item::Verbatim(ts));
+    }
+
     Classified {
         passthrough_items,
         engine_items,
@@ -309,6 +627,141 @@ fn classify(items: Vec<Item>) -> Classified {
         contract_targets,
         external_provide_bodies,
         when_used_as_spec_redirect,
+        cov_mutate_targets,
+        inline_assert_targets,
+    }
+}
+
+/// Walk every fn body in `items` looking for `#[pbt]`-marked inline
+/// asserts. For each one found:
+///
+///  - Strip the `#[pbt]` attribute (in place) so the verifier doesn't
+///    see an unknown attribute when the item is later re-emitted.
+///  - Look up the enclosing fn's `ContractTarget` clone (free fn or
+///    impl method) by ident match. Path-form asserts need the
+///    enclosing fn's signature for harness sampling; forall-form
+///    don't (they sample the binders directly), but we still record
+///    a match so the user can mix the two forms in one fn.
+///  - Push an `InlineAssertContext` into `out_targets`.
+///  - Push any discovery error into `out_errors`.
+///
+/// We walk the same item set that gets re-emitted to the verifier, so
+/// the `#[pbt]` strip is the only side effect on `items`. The
+/// discovery is purely structural — no spec→exec lowering happens at
+/// this stage.
+fn discover_inline_asserts_in_items(
+    items: &mut [Item],
+    contract_targets: &[ContractTarget],
+    out_targets: &mut Vec<InlineAssertContext>,
+    out_errors: &mut Vec<Error>,
+) {
+    for item in items.iter_mut() {
+        match item {
+            Item::Fn(item_fn) => {
+                let label = item_fn.sig.ident.to_string();
+                let mut local_targets = Vec::new();
+                if let Err(e) = super::pbt_assert::discover_in_block(
+                    &mut item_fn.block,
+                    &label,
+                    &mut local_targets,
+                ) {
+                    out_errors.push(e);
+                    continue;
+                }
+                let enclosing = contract_targets.iter().find(|ct| match ct {
+                    ContractTarget::FreeFn(f) => f.sig.ident == item_fn.sig.ident,
+                    ContractTarget::Method { .. } => false,
+                });
+                for tgt in local_targets {
+                    out_targets.push(InlineAssertContext {
+                        target: tgt,
+                        enclosing: enclosing.cloned(),
+                    });
+                }
+            }
+            Item::Impl(item_impl) => {
+                let self_ty_ident = impl_self_ty_ident(item_impl);
+                for ii in item_impl.items.iter_mut() {
+                    if let verus_syn::ImplItem::Fn(impl_fn) = ii {
+                        let label = match &self_ty_ident {
+                            Some(t) => format!("{}::{}", t, impl_fn.sig.ident),
+                            None => impl_fn.sig.ident.to_string(),
+                        };
+                        let mut local_targets = Vec::new();
+                        if let Err(e) = super::pbt_assert::discover_in_block(
+                            &mut impl_fn.block,
+                            &label,
+                            &mut local_targets,
+                        ) {
+                            out_errors.push(e);
+                            continue;
+                        }
+                        let enclosing = contract_targets.iter().find(|ct| match ct {
+                            ContractTarget::Method { method, self_ty } => {
+                                method.sig.ident == impl_fn.sig.ident
+                                    && Some(self_ty) == self_ty_ident.as_ref()
+                            }
+                            ContractTarget::FreeFn(_) => false,
+                        });
+                        for tgt in local_targets {
+                            out_targets.push(InlineAssertContext {
+                                target: tgt,
+                                enclosing: enclosing.cloned(),
+                            });
+                        }
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+}
+
+/// Walk `passthrough_items` and replace each `ContractTarget` body
+/// with the corresponding (now-stripped) item's body. This keeps the
+/// `contract_targets` clones in sync with the post-discovery state of
+/// the passthrough items, so that re-emitting bodies via
+/// `emit_mutant_fn_*` doesn't re-introduce the `#[pbt]` markers we
+/// just stripped.
+///
+/// We match by ident (free fn) or by `(self_ty, method_ident)` pair
+/// (impl method). When no match is found we leave the target alone —
+/// it's a stale clone but there's no enclosing item to refresh from.
+fn refresh_contract_targets_from_items(
+    items: &[Item],
+    targets: &mut Vec<ContractTarget>,
+) {
+    for target in targets.iter_mut() {
+        match target {
+            ContractTarget::FreeFn(item_fn) => {
+                for item in items {
+                    if let Item::Fn(updated) = item {
+                        if updated.sig.ident == item_fn.sig.ident {
+                            *item_fn = updated.clone();
+                            break;
+                        }
+                    }
+                }
+            }
+            ContractTarget::Method { self_ty, method } => {
+                for item in items {
+                    if let Item::Impl(im) = item {
+                        let st = impl_self_ty_ident(im);
+                        if st.as_ref() != Some(self_ty) {
+                            continue;
+                        }
+                        for ii in &im.items {
+                            if let verus_syn::ImplItem::Fn(updated) = ii {
+                                if updated.sig.ident == method.sig.ident {
+                                    *method = updated.clone();
+                                    break;
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
     }
 }
 
@@ -2802,12 +3255,80 @@ fn scan_index_bound_constraints(sig: &verus_syn::Signature) -> HashMap<String, u
     out
 }
 
+/// Controls which fn the emitted harness calls, and what kind of test
+/// item it produces.
+#[derive(Clone, Debug)]
+enum HarnessFlavor {
+    /// Standard `#[pbt]` harness: a `proptest!` block that calls the
+    /// original fn (`super::<fn>(...)` / `super::<Type>::<fn>(...)`).
+    /// The harness is a `#[test]` and asserts `prop_assert!` on each
+    /// ensures clause.
+    Regular,
+    /// Mutant runner for `#[pbt_cov_mutate]`: a plain `fn() ->
+    /// MutantOutcome` that runs an in-process proptest loop against
+    /// `super::__pbt_mutant_<k>_<orig>`. Returns `Killed` as soon as
+    /// any input violates the post-condition; returns `Survived` if
+    /// all inputs pass.
+    MutantRunner {
+        runner_name: Ident,
+        mutant_call_fn: Ident,
+        /// `true` if the mutant is a method on the enclosing impl
+        /// type (vs a free fn). Carried through emit_harness so future
+        /// phases (e.g. clause attribution) can route on this; the
+        /// current emission path treats both the same way because
+        /// emit_cov_mutate_block always emits the mutant as a free fn
+        /// with a `self_value` positional parameter.
+        #[allow(dead_code)]
+        mutant_is_method: bool,
+    },
+    /// Path-form `#[pbt] assert(P)` checker. Emits a `proptest!`
+    /// `#[test]` that drives the *checker fn* (a parallel clone of
+    /// the enclosing fn whose targeted `assert(P)` has been rewritten
+    /// to a panicking check). Differences from `Regular`:
+    ///   - The body does NOT emit `prop_assert!` for ensures clauses
+    ///     — the panic in the checker fn IS the failure signal.
+    ///   - The body still emits `prop_assume!` for requires clauses
+    ///     so unreachable inputs are filtered.
+    ///   - The call routes to `checker_fn(<args>)` (a free fn at
+    ///     module scope, like the mutant runner pattern).
+    InlineAssertChecker {
+        /// Name of the parallel fn (`__pbt_assert_<idx>_<fn>`).
+        checker_fn: Ident,
+        /// Public name of the `#[test]` we emit (`__pbt_assert_<fn>_at_lineN`).
+        test_name: Ident,
+        /// `true` if the enclosing fn is a method. The checker fn is
+        /// always emitted as a free fn (with `self_value` positional
+        /// arg), so this flag drives only the diagnostic message
+        /// produced on failure — not the calling convention.
+        #[allow(dead_code)]
+        enclosing_is_method: bool,
+    },
+}
+
 fn emit_harness(
     target: &ContractTarget,
     spec_fn_names: &HashSet<String>,
     user_types: &HashSet<String>,
     when_used_as_spec_redirect: &HashMap<String, String>,
     clause_counter: &mut u64,
+) -> Result<HarnessOutput, Error> {
+    emit_harness_with_flavor(
+        target,
+        spec_fn_names,
+        user_types,
+        when_used_as_spec_redirect,
+        clause_counter,
+        HarnessFlavor::Regular,
+    )
+}
+
+fn emit_harness_with_flavor(
+    target: &ContractTarget,
+    spec_fn_names: &HashSet<String>,
+    user_types: &HashSet<String>,
+    when_used_as_spec_redirect: &HashMap<String, String>,
+    clause_counter: &mut u64,
+    flavor: HarnessFlavor,
 ) -> Result<HarnessOutput, Error> {
     // Pull out the bits that depend on free-fn vs method shape.
     let (sig, fn_name, is_method, self_ty_for_method): (&verus_syn::Signature, &Ident, bool, Option<Ident>) =
@@ -3156,15 +3677,22 @@ the return value to be a sample-able runtime value.",
                     };
                 }
             }
-            // For usize index params bounded by `< collection.len()`, sample
-            // in `0..=max` so a high fraction of samples satisfy the
-            // precondition. The remaining mismatches (where the actually
-            // sampled collection is shorter) get filtered by prop_assume!.
+            // For usize index params bounded by `< collection.len()` (or
+            // `< <int-literal>`), sample in `0..=max` so a high fraction
+            // of samples satisfy the precondition. The remaining
+            // mismatches (where the actually sampled collection is
+            // shorter) get filtered by prop_assume!.
+            //
+            // Gated on the param being typed `usize` — otherwise the
+            // sampled `0..=max` value is the wrong type at the call
+            // site (e.g. for `u32`-bounded params).
             if let Some(&max) = index_bounds.get(&id.to_string()) {
-                if matches!(shape, ParamShape::Primitive(_)) {
-                    return quote! {
-                        #lhs_id in (0usize..=#max)
-                    };
+                if let ParamShape::Primitive(ty) = shape {
+                    if quote!(#ty).to_string() == "usize" {
+                        return quote! {
+                            #lhs_id in (0usize..=#max)
+                        };
+                    }
                 }
             }
             quote! { #lhs_id in ::verus_pbt_runtime::pbt_strategy::<#ty>() }
@@ -3221,11 +3749,39 @@ the return value to be a sample-able runtime value.",
     // Adapt the call to either `super::fn_name(...)` or
     // `super::Self::method(&self_value, ...)`. For methods the receiver is
     // already in `real_call_args[0]` (since we treat self as a ParamShape).
-    let real_call: TokenStream2 = if is_method {
-        let self_ty = self_ty_for_method.as_ref().unwrap();
-        quote! { super::#self_ty::#fn_name(#(#real_call_args),*) }
-    } else {
-        quote! { super::#fn_name(#(#real_call_args),*) }
+    //
+    // For HarnessFlavor::MutantRunner the call routes through the
+    // mutant's parallel fn instead of the original. The mutant fn lives
+    // in the SAME harness module as the runner, so the path is bare
+    // (no `super::`) — except for the `Type::method` shape, which still
+    // resolves via the *parent* type, since mutant methods sit on a
+    // separate impl block in the harness module's `super` scope.
+    let real_call: TokenStream2 = match &flavor {
+        HarnessFlavor::Regular => {
+            if is_method {
+                let self_ty = self_ty_for_method.as_ref().unwrap();
+                quote! { super::#self_ty::#fn_name(#(#real_call_args),*) }
+            } else {
+                quote! { super::#fn_name(#(#real_call_args),*) }
+            }
+        }
+        HarnessFlavor::MutantRunner {
+            mutant_call_fn,
+            mutant_is_method: _,
+            ..
+        } => {
+            // The mutant fn always lives in the harness module
+            // (emit_cov_mutate_block emits it as a free fn at module
+            // scope, even for impl methods — the receiver is rewritten
+            // to `self_value: &<Self>` / `&mut <Self>` / `<Self>`).
+            // So the call is bare-ident regardless of method-ness.
+            quote! { #mutant_call_fn(#(#real_call_args),*) }
+        }
+        HarnessFlavor::InlineAssertChecker { checker_fn, .. } => {
+            // Like MutantRunner, the checker fn is emitted as a free
+            // fn at module scope.
+            quote! { #checker_fn(#(#real_call_args),*) }
+        }
     };
 
     let result_let = match return_shape {
@@ -3239,34 +3795,193 @@ the return value to be a sample-able runtime value.",
         },
     };
 
-    let harness_tokens = quote_spanned! { fn_name.span() =>
-        proptest! {
-            #![proptest_config(::proptest::test_runner::Config {
-                // Bump the global rejects ceiling so harnesses with
-                // multi-param relational preconditions (e.g. `i <= j`) can
-                // still complete enough successful cases. Default is 1024;
-                // we raise it to 65536. The default success threshold
-                // (256) is unchanged.
-                max_global_rejects: 65536,
-                ..::proptest::test_runner::Config::default()
-            })]
+    let harness_tokens = match &flavor {
+        HarnessFlavor::Regular => quote_spanned! { fn_name.span() =>
+            proptest! {
+                #![proptest_config(::proptest::test_runner::Config {
+                    // Bump the global rejects ceiling so harnesses with
+                    // multi-param relational preconditions (e.g. `i <= j`) can
+                    // still complete enough successful cases. Default is 1024;
+                    // we raise it to 65536. The default success threshold
+                    // (256) is unchanged.
+                    max_global_rejects: 65536,
+                    ..::proptest::test_runner::Config::default()
+                })]
 
-            #[test]
-            fn #pbt_fn_name(
-                #(#strategy_decls),*
-            ) {
-                // Snapshot pre-call state for `&mut`-shaped params FIRST so
-                // both `requires` and `ensures` can reference `old(<id>)`.
-                #(#pre_state_lets)*
-                #(::proptest::prop_assume!(#rewritten_requires);)*
-                #(#pre_call_bindings)*
-                #result_let
-                #(::proptest::prop_assert!(#rewritten_ensures);)*
+                #[test]
+                fn #pbt_fn_name(
+                    #(#strategy_decls),*
+                ) {
+                    // Snapshot pre-call state for `&mut`-shaped params FIRST so
+                    // both `requires` and `ensures` can reference `old(<id>)`.
+                    #(#pre_state_lets)*
+                    #(::proptest::prop_assume!(#rewritten_requires);)*
+                    #(#pre_call_bindings)*
+                    #result_let
+                    #(::proptest::prop_assert!(#rewritten_ensures);)*
+                }
+            }
+        },
+        HarnessFlavor::MutantRunner { runner_name, .. } => {
+            // In-process mutant runner: returns `MutantOutcome::Killed` on
+            // the first failed assertion, `MutantOutcome::Survived` if
+            // every sample passed, `MutantOutcome::Inconclusive` if every
+            // sample was rejected by `prop_assume!`.
+            //
+            // We build the `proptest::Strategy` value manually (one per
+            // strategy decl) so we can drive it through
+            // `TestRunner::run` without the `proptest!` macro's `#[test]`
+            // wrapping.
+            //
+            // Each strategy decl is a `<id> in <strategy>` shape; we
+            // collect the strategies into a tuple, run it, and unpack
+            // the tuple in the body. The order of `#strategy_decls` is
+            // deterministic, matching `param_idents`.
+            //
+            // The body of the inner closure mirrors the regular harness
+            // body, but `prop_assume!` failures are converted into
+            // `Inconclusive` (rather than rejected silently) via a
+            // counter, and `prop_assert!` failures convert to `Killed`
+            // by returning early.
+            let strategy_exprs: Vec<TokenStream2> = strategy_decls
+                .iter()
+                .map(|decl| {
+                    // Each decl looks like `id in <strategy>`. Extract
+                    // the strategy expression by stripping the `id in `
+                    // prefix at token level.
+                    extract_strategy_expr(decl)
+                })
+                .collect();
+            let bindings: Vec<&Ident> = param_idents.iter().collect();
+            quote_spanned! { fn_name.span() =>
+                #[allow(non_snake_case, unused_variables, unused_mut, dead_code)]
+                pub(super) fn #runner_name() -> ::verus_pbt_runtime::cov_mutate::MutantOutcome {
+                    use ::verus_pbt_runtime::cov_mutate::MutantOutcome;
+                    use ::proptest::test_runner::{Config, TestCaseError, TestRunner};
+                    use ::proptest::strategy::Strategy;
+                    let cfg = Config {
+                        cases: 64,
+                        max_global_rejects: 65536,
+                        // Suppress proptest's persisted-failure file
+                        // for mutant runs — we expect mutants to fail.
+                        failure_persistence: None,
+                        ..Config::default()
+                    };
+                    let mut runner = TestRunner::new(cfg);
+                    let strategy = ( #( (#strategy_exprs) ,)* );
+                    let killed = ::std::cell::Cell::new(false);
+                    let assumed_at_least_once =
+                        ::std::cell::Cell::new(false);
+                    let run_result = runner.run(&strategy, |( #( mut #bindings , )* )| {
+                        #(#pre_state_lets)*
+                        // Pre-condition: skip if violated.
+                        #(if !{ #rewritten_requires } {
+                            return Err(TestCaseError::reject(
+                                "pre-condition rejected",
+                            ));
+                        })*
+                        assumed_at_least_once.set(true);
+                        #(#pre_call_bindings)*
+                        #result_let
+                        // Post-conditions: any failure kills the mutant.
+                        #(if !{ #rewritten_ensures } {
+                            killed.set(true);
+                            return Err(TestCaseError::fail(
+                                "ensures clause violated by mutant",
+                            ));
+                        })*
+                        Ok(())
+                    });
+                    // The mutant is killed when:
+                    //   (a) we explicitly set `killed` inside an ensures
+                    //       check above, or
+                    //   (b) `runner.run` returned Err for any other
+                    //       reason — typically a panic in the mutant's
+                    //       body (out-of-bounds index, integer
+                    //       overflow, etc.). proptest's `catch_unwind`
+                    //       turns those into TestCaseError::Fail, which
+                    //       counts as a kill signal.
+                    if killed.get() || run_result.is_err() {
+                        MutantOutcome::Killed
+                    } else if !assumed_at_least_once.get() {
+                        MutantOutcome::Inconclusive
+                    } else {
+                        MutantOutcome::Survived
+                    }
+                }
+            }
+        }
+        HarnessFlavor::InlineAssertChecker { test_name, .. } => {
+            // Inline-assert checker: drive the parallel checker fn
+            // (which has the targeted assert rewritten to a panicking
+            // check) with the enclosing fn's strategies. The checker
+            // fn panics when the assert fails; proptest catches the
+            // panic, shrinks, and reports the counterexample.
+            //
+            // Differences from `Regular`:
+            //   - `prop_assert!` for ensures clauses is OMITTED.
+            //     The contract's ensures clause is still meaningful
+            //     for SMT, but the test harness here is checking the
+            //     inline assert, not the ensures clause.
+            //   - `prop_assume!` for requires clauses IS kept. The
+            //     enclosing fn's preconditions still gate the
+            //     checker fn's input space.
+            //   - The result binding is unused (`_`) since we don't
+            //     check ensures.
+            quote_spanned! { fn_name.span() =>
+                proptest! {
+                    #![proptest_config(::proptest::test_runner::Config {
+                        max_global_rejects: 65536,
+                        ..::proptest::test_runner::Config::default()
+                    })]
+
+                    #[test]
+                    fn #test_name(
+                        #(#strategy_decls),*
+                    ) {
+                        #(#pre_state_lets)*
+                        #(::proptest::prop_assume!(#rewritten_requires);)*
+                        #(#pre_call_bindings)*
+                        #result_let
+                        let _ = &#result_binding;
+                    }
+                }
             }
         }
     };
 
     Ok(HarnessOutput { harness_tokens, synthetic_spec_fns })
+}
+
+/// Given a strategy decl in `<id> in <strategy>` form, return the
+/// `<strategy>` token-stream. The mutant runner builds its own tuple of
+/// strategies rather than using `proptest!`'s `id in <s>` syntax, so it
+/// needs to extract just the strategy expression.
+fn extract_strategy_expr(decl: &TokenStream2) -> TokenStream2 {
+    // The simplest approach is to parse the decl's source-text form
+    // back into a Rust expression by skipping the leading "<id> in".
+    // Use TokenStream lookahead to find the `in` keyword and take the
+    // tail.
+    let mut iter = decl.clone().into_iter();
+    let mut saw_in = false;
+    let mut tail = TokenStream2::new();
+    for tt in iter.by_ref() {
+        if let proc_macro2::TokenTree::Ident(id) = &tt {
+            if id == "in" {
+                saw_in = true;
+                break;
+            }
+        }
+    }
+    if !saw_in {
+        // Fallback: return the whole decl. The caller's tuple syntax
+        // will still parse, just possibly with the wrong shape.
+        return decl.clone();
+    }
+    for tt in iter {
+        tail.extend(std::iter::once(tt));
+    }
+    tail
 }
 
 /// Walk an expression and replace every `self` ident with `replacement`.
@@ -3297,6 +4012,715 @@ static UNIQUE_ID: AtomicU64 = AtomicU64::new(0);
 fn fresh_mod_name() -> Ident {
     let id = UNIQUE_ID.fetch_add(1, Ordering::Relaxed);
     Ident::new(&format!("__verus_pbt_{}", id), Span::call_site())
+}
+
+// ---------------------------------------------------------------------------
+// `#[pbt_cov_mutate]` emission
+// ---------------------------------------------------------------------------
+
+/// Build the inline-assert test-module contents for a `Classified`
+/// with non-empty `inline_assert_targets`. Returns an empty token
+/// stream when no targets are present.
+///
+/// For each path-form target (`#[pbt] assert(P)`):
+///   - Emits a parallel "checker" fn `__pbt_assert_<idx>_<encfn>` with
+///     the targeted `assert(P)` rewritten to a panicking check.
+///   - Emits a `#[test] fn __pbt_assert_<encfn>_at_lineN(...)`
+///     produced via `emit_harness_with_flavor` in
+///     `HarnessFlavor::InlineAssertChecker` mode. The harness samples
+///     the enclosing fn's parameters (with `prop_assume!` for
+///     requires-clauses) and calls the checker fn. A panic from the
+///     checker is the failure signal, caught and shrunk by proptest.
+///
+/// For each forall-form target (`#[pbt] assert forall |...| ... by { }`):
+///   - Emits a self-contained `#[test] fn __pbt_assert_forall_<encfn>_at_lineN()`
+///     that builds a proptest strategy from the binders' types and
+///     evaluates the predicate (or `implies`-form antecedent → consequent).
+///
+/// Path-form harnesses skip targets whose enclosing fn is not
+/// `#[pbt]`-able (e.g. has `Tracked` parameters); we surface a
+/// diagnostic via `compile_error!`. Forall-form harnesses don't
+/// depend on the enclosing fn's shape.
+fn emit_inline_assert_block(classified: &Classified) -> Result<TokenStream2, Error> {
+    if classified.inline_assert_targets.is_empty() {
+        return Ok(quote! {});
+    }
+
+    let mut checker_fns: Vec<TokenStream2> = Vec::new();
+    let mut harnesses: Vec<TokenStream2> = Vec::new();
+
+    for ctx in &classified.inline_assert_targets {
+        match &ctx.target.kind {
+            super::pbt_assert::InlineAssertKind::Path { .. } => {
+                // Path-form: needs the enclosing ContractTarget to
+                // build the harness. If we couldn't find one, the
+                // assert is in a fn that isn't `#[pbt]`-able.
+                let enclosing = match &ctx.enclosing {
+                    Some(e) => e,
+                    None => {
+                        return Err(Error::new(
+                            proc_macro2::Span::call_site(),
+                            format!(
+                                "verus_pbt: `#[pbt]` on inline assert at {}:{} \
+                                 requires the enclosing fn `{}` to be `#[pbt]`-able. \
+                                 Add `#[pbt]` to the fn (and ensure its params are \
+                                 sample-able) so the harness can drive it.",
+                                ctx.target.enclosing_fn_label,
+                                ctx.target.line,
+                                ctx.target.enclosing_fn_label,
+                            ),
+                        ));
+                    }
+                };
+
+                // Build the checker fn: clone the enclosing fn's body,
+                // rewrite the targeted assert to a panicking check.
+                // The fn is emitted at module scope (free fn shape).
+                let (checker_fn_ident, test_fn_ident, checker_ts) =
+                    emit_inline_assert_checker_fn(enclosing, &ctx.target)?;
+                checker_fns.push(checker_ts);
+
+                // Build the harness via emit_harness_with_flavor with
+                // the new InlineAssertChecker flavor.
+                let mut counter = 0u64;
+                let harness = emit_harness_with_flavor(
+                    enclosing,
+                    &classified.spec_fn_names,
+                    &classified.user_type_names,
+                    &classified.when_used_as_spec_redirect,
+                    &mut counter,
+                    HarnessFlavor::InlineAssertChecker {
+                        checker_fn: checker_fn_ident,
+                        test_name: test_fn_ident,
+                        enclosing_is_method: matches!(
+                            enclosing,
+                            ContractTarget::Method { .. }
+                        ),
+                    },
+                )?;
+                harnesses.push(harness.harness_tokens);
+            }
+            super::pbt_assert::InlineAssertKind::Forall { .. } => {
+                // Forall-form: standalone harness, no enclosing fn
+                // dependency. Emit directly.
+                let harness = emit_inline_assert_forall_harness(
+                    &ctx.target,
+                    &classified.spec_fn_names,
+                    &classified.user_type_names,
+                )?;
+                harnesses.push(harness);
+            }
+        }
+    }
+
+    Ok(quote! {
+        #(#checker_fns)*
+        #(#harnesses)*
+    })
+}
+
+/// Build the parallel "checker" fn for a path-form inline assert.
+/// Returns `(checker_fn_ident, test_fn_ident, fn_tokens)`.
+///
+/// The checker fn is the enclosing fn's body with the targeted
+/// `assert(P)` rewritten to a panicking check. Other asserts in the
+/// body remain `assert(...)` and erase to no-ops at `cargo test` time.
+fn emit_inline_assert_checker_fn(
+    enclosing: &ContractTarget,
+    target: &super::pbt_assert::InlineAssertTarget,
+) -> Result<(Ident, Ident, TokenStream2), Error> {
+    let line = target.line;
+    let idx = target.assert_idx;
+    let encfn_label = sanitize_label(&target.enclosing_fn_label);
+
+    let checker_fn_ident: Ident =
+        format_ident!("__pbt_assert_{}_{}", idx, encfn_label);
+    let test_fn_ident: Ident =
+        format_ident!("__pbt_assert_{}_at_line{}", encfn_label, line);
+
+    let panic_msg = format!(
+        "verus_pbt: inline assert at {}:{} (#[pbt] marker {}) failed",
+        target.enclosing_fn_label, line, idx
+    );
+
+    // Get the enclosing fn's body, clone it, and rewrite the targeted
+    // assert. Discovery counts each #[pbt]-marked assert with a 0-based
+    // ordinal, but the rewriter walks ALL asserts in order — so the
+    // ordinal we pass to the rewriter must be the index of the
+    // #[pbt]-marked assert AMONG ALL asserts, which is what discovery
+    // already gave us. (See pbt_assert.rs: discovery only increments on
+    // marked asserts; rewriting bumps on every assert, but this works
+    // out because by the time we rewrite, the marker has been stripped,
+    // so all asserts are "unmarked" and we just want the same total
+    // index.)
+    //
+    // CONCRETE: discovery's counter increments on each #[pbt]-marked
+    // assert. The rewriter's counter increments on each Assert variant
+    // it encounters. These align iff every assert in the fn carried
+    // #[pbt]. Otherwise we need to recompute the rewrite ordinal as the
+    // index of the marker among ALL asserts in the body.
+    //
+    // For Tier 1 we keep the simpler scheme: discovery records the
+    // index *among #[pbt]-marked asserts*. We then walk the cloned
+    // body and find the Nth (0-indexed) marked-or-unmarked assert that
+    // matches the source line. This is robust against mixed marked/
+    // unmarked asserts in the same fn.
+
+    let mut body = match enclosing {
+        ContractTarget::FreeFn(item_fn) => (*item_fn.block).clone(),
+        ContractTarget::Method { method, .. } => method.block.clone(),
+    };
+
+    // Find the assert by source line and rewrite it. We use line-based
+    // matching because the body has already had `#[pbt]` stripped
+    // before we got here (the discovery pass mutates passthrough_items),
+    // so the cloned ContractTarget body may or may not still carry the
+    // attribute depending on which clone-vs-original path was used.
+    let applied = super::pbt_assert::rewrite_path_assert_at_line(
+        &mut body,
+        line,
+        idx,
+        &panic_msg,
+    );
+    if !applied {
+        return Err(Error::new(
+            proc_macro2::Span::call_site(),
+            format!(
+                "verus_pbt: internal: failed to rewrite inline assert at {}:{} \
+                 (idx={}). Likely a discovery/rewrite ordering mismatch.",
+                target.enclosing_fn_label, line, idx
+            ),
+        ));
+    }
+
+    let fn_ts = match enclosing {
+        ContractTarget::FreeFn(item_fn) => {
+            emit_mutant_fn_freefn(item_fn, &checker_fn_ident, &body)
+        }
+        ContractTarget::Method { self_ty, method } => {
+            emit_mutant_fn_method(self_ty, method, &checker_fn_ident, &body)
+        }
+    };
+
+    Ok((checker_fn_ident, test_fn_ident, fn_ts))
+}
+
+/// Sanitize a `Type::name` / `fn_name` label into a valid Rust ident
+/// suffix. Replaces `::` with `_` so we get
+/// `__pbt_assert_Counter_step` rather than the invalid
+/// `__pbt_assert_Counter::step`.
+fn sanitize_label(s: &str) -> String {
+    s.replace("::", "_")
+}
+
+/// Build a self-contained `#[test]` for a forall-form `#[pbt] assert
+/// forall |x: T| P(x) [implies Q(x)] by { }`.
+///
+/// The harness:
+///   - Builds a proptest strategy tuple from the binders' declared
+///     types via the existing `ParamShape` classification.
+///   - Samples the binders, evaluates `P` (or `P` as antecedent and
+///     `Q` as consequent for the implies form).
+///   - Reports a counterexample on first failure.
+///
+/// **Tier 1 limitation**: the predicate is NOT spec→exec lowered. The
+/// expression is emitted verbatim, so it must evaluate as exec code on
+/// the binder values. Predicates that reference spec-only constructs
+/// (Seq, Map, Set, ghost projections, calls to `spec` fns) will fail
+/// to compile. Tier 2 will lift the contract rewriter into a
+/// freestanding helper and apply it here.
+fn emit_inline_assert_forall_harness(
+    target: &super::pbt_assert::InlineAssertTarget,
+    _spec_fn_names: &HashSet<String>,
+    user_type_names: &HashSet<String>,
+) -> Result<TokenStream2, Error> {
+    let (binders, predicate, implies) = match &target.kind {
+        super::pbt_assert::InlineAssertKind::Forall {
+            binders,
+            predicate,
+            implies,
+        } => (binders, predicate, implies),
+        _ => unreachable!(),
+    };
+
+    let line = target.line;
+    let encfn_label = sanitize_label(&target.enclosing_fn_label);
+    let test_fn_ident: Ident =
+        format_ident!("__pbt_assert_forall_{}_at_line{}", encfn_label, line);
+
+    // Build the strategy tuple from the binder types, using the same
+    // shape-classification path as regular `#[pbt]` parameters. We
+    // reject any binder type whose `ParamShape` we can't sample.
+    let mut strategy_exprs: Vec<TokenStream2> = Vec::new();
+    let mut binder_idents: Vec<Ident> = Vec::new();
+    let mut binder_types: Vec<TokenStream2> = Vec::new();
+    for (ident, ty) in binders {
+        let _shape = classify_param_type(ty, user_type_names).map_err(|e| {
+            Error::new_spanned(
+                ty,
+                format!(
+                    "verus_pbt: `#[pbt] assert forall` binder `{}: {}` has an \
+                     unsupported type. {}",
+                    ident,
+                    quote::quote!(#ty),
+                    e
+                ),
+            )
+        })?;
+        // Use the same simple `pbt_strategy::<T>()` path used for
+        // unconstrained ordinary params.
+        strategy_exprs.push(quote! {
+            ::verus_pbt_runtime::pbt_strategy::<#ty>()
+        });
+        binder_idents.push(ident.clone());
+        binder_types.push(quote! { #ty });
+    }
+
+    let test_failure_msg = format!(
+        "verus_pbt: assert forall failed at {}:{}",
+        target.enclosing_fn_label, line
+    );
+
+    let body = match implies {
+        // implies form: predicate is the antecedent, implies is the consequent.
+        Some(consequent) => quote! {
+            // Antecedent false → discard (don't count as failure).
+            if !{ #predicate } {
+                return Err(::proptest::test_runner::TestCaseError::reject(
+                    "antecedent rejected"
+                ));
+            }
+            if !{ #consequent } {
+                return Err(::proptest::test_runner::TestCaseError::fail(
+                    #test_failure_msg
+                ));
+            }
+            Ok(())
+        },
+        // simple form: just check the predicate.
+        None => quote! {
+            if !{ #predicate } {
+                return Err(::proptest::test_runner::TestCaseError::fail(
+                    #test_failure_msg
+                ));
+            }
+            Ok(())
+        },
+    };
+
+    Ok(quote! {
+        #[test]
+        #[allow(non_snake_case, unused_variables, unused_mut, dead_code)]
+        fn #test_fn_ident() {
+            use ::proptest::strategy::Strategy;
+            use ::proptest::test_runner::{Config, TestCaseError, TestRunner};
+            let cfg = Config {
+                max_global_rejects: 65536,
+                ..Config::default()
+            };
+            let mut runner = TestRunner::new(cfg);
+            let strategy = ( #( (#strategy_exprs) ,)* );
+            let result = runner.run(&strategy, |( #( #binder_idents , )* )| {
+                #body
+            });
+            if let Err(e) = result {
+                ::std::panic!("verus_pbt: assert forall produced a counterexample: {:?}", e);
+            }
+        }
+    })
+}
+
+/// Build the cov_mutate test-module contents for a `Classified` with
+/// non-empty `cov_mutate_targets`. Returns an empty token stream when
+/// no targets are present. Emits, for each non-skipped target:
+///
+///  - One parallel `__pbt_mutant_<k>_<orig>` fn per mutation site, with
+///    the same signature as the original but a mutated body and no
+///    contract attributes.
+///  - One `__pbt_mutant_run_<k>_<orig>` runner fn produced by
+///    [`emit_harness_with_flavor`] in [`HarnessFlavor::MutantRunner`]
+///    mode. The runner sets up an in-process proptest loop and returns
+///    [`MutantOutcome`].
+///  - One `PbtCovMutant` const slice referencing the runners.
+///  - The aggregating `PbtCovMutateTarget` const slice.
+///  - A `#[test] fn __pbt_mutation_report()` that calls
+///    `run_mutation_report` with the targets.
+fn emit_cov_mutate_block(classified: &Classified) -> Result<TokenStream2, Error> {
+    if classified.cov_mutate_targets.is_empty() {
+        return Ok(quote! {});
+    }
+
+    /// Per-fn cap on mutation sites. Keeps compile time bounded.
+    const PER_FN_MAX_MUTANTS: usize = 30;
+
+    let mut mutant_fn_decls: Vec<TokenStream2> = Vec::new();
+    let mut mutant_runner_decls: Vec<TokenStream2> = Vec::new();
+    let mut target_decls: Vec<TokenStream2> = Vec::new();
+
+    for target in &classified.cov_mutate_targets {
+        // Skipped targets still appear in the report; we just emit no
+        // mutants for them.
+        if target.skip {
+            target_decls.push(emit_target_decl(target, &[]));
+            continue;
+        }
+
+        // Enumerate mutation sites on the body. We thread a
+        // `MutatorContext` built from the original fn's signature so
+        // the type-gated operators (ABS, UOI) can fire only on params
+        // with the right declared type.
+        let (body, sig) = match &target.body_source {
+            CovMutateBodySource::FreeFn(item_fn) => {
+                (item_fn.block.as_ref().clone(), &item_fn.sig)
+            }
+            CovMutateBodySource::Method { method, .. } => {
+                (method.block.clone(), &method.sig)
+            }
+        };
+        let mutator_ctx = super::pbt_mutator::MutatorContext::from_signature(sig);
+        let (sites, _hit_cap) = super::pbt_mutator::enumerate_mutation_sites_with_context(
+            &body,
+            PER_FN_MAX_MUTANTS,
+            &mutator_ctx,
+        );
+
+        let mut per_fn_mutant_consts: Vec<TokenStream2> = Vec::new();
+
+        for site in &sites {
+            // Names of the parallel fn and its runner.
+            let fn_ident_str = &target.fn_ident;
+            let mutant_fn_ident: Ident = format_ident!(
+                "__pbt_mutant_{}_{}",
+                site.idx,
+                fn_ident_str
+            );
+            let runner_ident: Ident = format_ident!(
+                "__pbt_mutant_run_{}_{}",
+                site.idx,
+                fn_ident_str
+            );
+
+            // Emit the parallel fn (same sig as original, mutated body,
+            // contract attrs stripped).
+            let mutant_fn_ts = match &target.body_source {
+                CovMutateBodySource::FreeFn(item_fn) => {
+                    emit_mutant_fn_freefn(item_fn, &mutant_fn_ident, &site.mutated_body)
+                }
+                CovMutateBodySource::Method { self_ty, method } => {
+                    emit_mutant_fn_method(
+                        self_ty,
+                        method,
+                        &mutant_fn_ident,
+                        &site.mutated_body,
+                    )
+                }
+            };
+            mutant_fn_decls.push(mutant_fn_ts);
+
+            // Emit the runner fn via `emit_harness_with_flavor`. The
+            // contract target is the *original* fn (so the requires /
+            // ensures are correct), but the call routes through the
+            // mutant fn.
+            let mutant_is_method =
+                matches!(&target.body_source, CovMutateBodySource::Method { .. });
+            let contract_target = match &target.body_source {
+                CovMutateBodySource::FreeFn(item_fn) => {
+                    ContractTarget::FreeFn(item_fn.clone())
+                }
+                CovMutateBodySource::Method { self_ty, method } => {
+                    ContractTarget::Method {
+                        self_ty: self_ty.clone(),
+                        method: method.clone(),
+                    }
+                }
+            };
+            let mut counter = 0u64;
+            let runner = emit_harness_with_flavor(
+                &contract_target,
+                &classified.spec_fn_names,
+                &classified.user_type_names,
+                &classified.when_used_as_spec_redirect,
+                &mut counter,
+                HarnessFlavor::MutantRunner {
+                    runner_name: runner_ident.clone(),
+                    mutant_call_fn: mutant_fn_ident.clone(),
+                    mutant_is_method,
+                },
+            )?;
+            // Emit the synthetic spec fns alongside the runner. They go
+            // into the harness module like the regular harness's synth
+            // fns. (We collect them into a side bucket; the caller
+            // appends them to the engine_items list.)
+            for synth in runner.synthetic_spec_fns {
+                mutant_runner_decls.push(synth);
+            }
+            mutant_runner_decls.push(runner.harness_tokens);
+
+            // Build the PbtCovMutant entry referring to this runner.
+            let line_num = site.line as u64;
+            let desc_str = site.description.clone();
+            let idx_num = site.idx;
+            let mutant_const = quote! {
+                ::verus_pbt_runtime::cov_mutate::PbtCovMutant {
+                    idx: #idx_num as u32,
+                    line: #line_num as u32,
+                    description: #desc_str,
+                    run: #runner_ident,
+                }
+            };
+            per_fn_mutant_consts.push(mutant_const);
+        }
+
+        target_decls.push(emit_target_decl(target, &per_fn_mutant_consts));
+    }
+
+    let n = target_decls.len();
+    Ok(quote! {
+        // Mutant fns (one per mutation site).
+        #(#mutant_fn_decls)*
+
+        // Per-mutant runner fns (one per mutation site).
+        #(#mutant_runner_decls)*
+
+        // Per-fn target metadata. Each target carries a slice of
+        // mutants pointing at the runner fns.
+        const __PBT_COV_MUTATE_TARGETS:
+            [::verus_pbt_runtime::cov_mutate::PbtCovMutateTarget; #n] = [
+            #(#target_decls),*
+        ];
+
+        // The report test runs as part of `cargo test`. It iterates
+        // each non-skipped target's mutants in process, tallies kill
+        // rates, writes a full report to
+        // `target/verus-pbt-cov-mutate.txt` (under
+        // CARGO_MANIFEST_DIR), prints the report to stderr (visible
+        // with `cargo test -- --nocapture`), and panics if any
+        // configured threshold is violated.
+        #[test]
+        #[allow(non_snake_case)]
+        fn __pbt_mutation_report() {
+            ::verus_pbt_runtime::cov_mutate::run_mutation_report(
+                env!("CARGO_MANIFEST_DIR"),
+                &__PBT_COV_MUTATE_TARGETS,
+            );
+        }
+    })
+}
+
+/// Build a `PbtCovMutateTarget { ... mutants: &[ ... ] }` literal.
+fn emit_target_decl(
+    target: &CovMutateTarget,
+    mutant_consts: &[TokenStream2],
+) -> TokenStream2 {
+    let fn_name = &target.fn_name;
+    let threshold_expr: TokenStream2 = match target.threshold {
+        Some(n) => {
+            let n = n as u8;
+            quote! { ::std::option::Option::Some(#n) }
+        }
+        None => quote! { ::std::option::Option::None },
+    };
+    let skip = target.skip;
+    // The macro doesn't have access to `file!()` in a const context the
+    // way a runtime fn does, so we punt: the report will use the
+    // per-mutant `line` and label the `file` as a placeholder. Users
+    // who need a precise file path can `cargo test -- --nocapture` and
+    // the report will show file:line for each survivor.
+    quote! {
+        ::verus_pbt_runtime::cov_mutate::PbtCovMutateTarget {
+            fn_name: #fn_name,
+            file: file!(),
+            mutants: &[ #(#mutant_consts),* ],
+            threshold: #threshold_expr,
+            skip: #skip,
+        }
+    }
+}
+
+/// Emit a parallel `fn __pbt_mutant_<k>_<orig>(args) -> ret { <mutated body> }`
+/// for a free-fn target. The signature mirrors the original fn's exec
+/// signature (param names, types, return type) but with all Verus
+/// annotations removed: no `requires`/`ensures`, no `(out: T)`-style
+/// named return, no `exec`/`spec` mode keywords.
+fn emit_mutant_fn_freefn(
+    item_fn: &verus_syn::ItemFn,
+    mutant_fn_ident: &Ident,
+    mutated_body: &verus_syn::Block,
+) -> TokenStream2 {
+    let sig = strip_verus_sig_for_mutant(&item_fn.sig);
+    let attrs: Vec<&verus_syn::Attribute> = item_fn
+        .attrs
+        .iter()
+        .filter(|a| !attr_belongs_to_verus(a))
+        .collect();
+    quote! {
+        #(#attrs)*
+        #[allow(unused_variables, unused_mut, dead_code, non_snake_case)]
+        pub(super) fn #mutant_fn_ident #sig
+            #mutated_body
+    }
+}
+
+/// Same as `emit_mutant_fn_freefn` but for impl methods. For
+/// `impl<T> Container<T> { fn step(&mut self) { ... } }` we emit
+/// `fn __pbt_mutant_<k>_step(self_value: &mut Container<T>) { ... }` —
+/// a free fn with the receiver remapped to a positional parameter, so
+/// the body's `self.<x>` references must be rewritten to
+/// `self_value.<x>`. We reuse `replace_self_with_ident` for that pass
+/// (the same one used by the regular harness).
+fn emit_mutant_fn_method(
+    self_ty: &Ident,
+    method: &verus_syn::ImplItemFn,
+    mutant_fn_ident: &Ident,
+    mutated_body: &verus_syn::Block,
+) -> TokenStream2 {
+    // Walk a clone of the body to replace `self` → `self_value`.
+    let mut body = mutated_body.clone();
+    let synth_self =
+        Ident::new("self_value", proc_macro2::Span::call_site());
+    {
+        struct R<'a> {
+            replacement: &'a Ident,
+        }
+        impl<'a> VisitMut for R<'a> {
+            fn visit_expr_path_mut(&mut self, p: &mut ExprPath) {
+                for seg in p.path.segments.iter_mut() {
+                    if seg.ident == "self" {
+                        seg.ident = self.replacement.clone();
+                    }
+                }
+                verus_syn::visit_mut::visit_expr_path_mut(self, p);
+            }
+        }
+        let mut r = R { replacement: &synth_self };
+        for stmt in body.stmts.iter_mut() {
+            match stmt {
+                verus_syn::Stmt::Local(local) => {
+                    if let Some(init) = &mut local.init {
+                        r.visit_expr_mut(&mut init.expr);
+                    }
+                }
+                verus_syn::Stmt::Expr(e, _) => r.visit_expr_mut(e),
+                _ => {}
+            }
+        }
+    }
+
+    // Reconstruct the signature with the receiver translated to a
+    // positional `self_value: &<Self>` (or `&mut <Self>`) parameter.
+    let sig = strip_verus_sig_for_mutant_method(&method.sig, self_ty, &synth_self);
+    let attrs: Vec<&verus_syn::Attribute> = method
+        .attrs
+        .iter()
+        .filter(|a| !attr_belongs_to_verus(a))
+        .collect();
+    quote! {
+        #(#attrs)*
+        #[allow(unused_variables, unused_mut, dead_code, non_snake_case)]
+        pub(super) fn #mutant_fn_ident #sig
+            #body
+    }
+}
+
+/// True if `attr` is a Verus-only attribute we should drop on the
+/// mutant fn (because the mutant has no contract / mode / etc.).
+fn attr_belongs_to_verus(attr: &verus_syn::Attribute) -> bool {
+    let path = attr.path();
+    if path.leading_colon.is_some() {
+        return false;
+    }
+    let segs: Vec<String> = path.segments.iter().map(|s| s.ident.to_string()).collect();
+    let segs: Vec<&str> = segs.iter().map(|s| s.as_str()).collect();
+    matches!(
+        &segs[..],
+        ["pbt"]
+            | ["contrib", "pbt"]
+            | ["vstd", "contrib", "pbt"]
+            | ["pbt_cov_mutate"]
+            | ["contrib", "pbt_cov_mutate"]
+            | ["vstd", "contrib", "pbt_cov_mutate"]
+            | ["pbt_provide"]
+            | ["contrib", "pbt_provide"]
+            | ["vstd", "contrib", "pbt_provide"]
+            | ["verifier", _]
+            | ["verus", ..]
+            | ["verus_spec"]
+    )
+}
+
+/// Build a fn signature suitable for the mutant fn: same generics +
+/// inputs + return type as the original, but with the Verus-specific
+/// extensions (named return `(out: T)`, `requires`, `ensures`,
+/// `decreases`, mode keywords) stripped out.
+fn strip_verus_sig_for_mutant(orig: &verus_syn::Signature) -> TokenStream2 {
+    let generics = &orig.generics;
+    let inputs: Vec<TokenStream2> = orig
+        .inputs
+        .iter()
+        .map(|arg| match &arg.kind {
+            FnArgKind::Receiver(_r) => {
+                // Free fns don't have receivers — this branch
+                // shouldn't fire from `emit_mutant_fn_freefn`.
+                quote! {}
+            }
+            FnArgKind::Typed(pt) => {
+                let pat = &pt.pat;
+                let ty = &pt.ty;
+                quote! { #pat: #ty }
+            }
+        })
+        .collect();
+    let ret_ty: TokenStream2 = match &orig.output {
+        ReturnType::Default => quote! {},
+        ReturnType::Type(_, _, _, ty) => quote! { -> #ty },
+    };
+    let where_clause: TokenStream2 = match &generics.where_clause {
+        Some(wc) => quote! { #wc },
+        None => quote! {},
+    };
+    quote! { #generics ( #(#inputs),* ) #ret_ty #where_clause }
+}
+
+/// Same as `strip_verus_sig_for_mutant` but for impl methods, with the
+/// receiver translated to `self_value: &<Self>` / `&mut <Self>` /
+/// `<Self>`.
+fn strip_verus_sig_for_mutant_method(
+    orig: &verus_syn::Signature,
+    self_ty: &Ident,
+    self_replacement: &Ident,
+) -> TokenStream2 {
+    let generics = &orig.generics;
+    let mut inputs: Vec<TokenStream2> = Vec::new();
+    for arg in &orig.inputs {
+        match &arg.kind {
+            FnArgKind::Receiver(r) => {
+                let self_param: TokenStream2 = if r.reference.is_some() {
+                    if r.mutability.is_some() {
+                        quote! { #self_replacement: &mut #self_ty }
+                    } else {
+                        quote! { #self_replacement: &#self_ty }
+                    }
+                } else {
+                    quote! { #self_replacement: #self_ty }
+                };
+                inputs.push(self_param);
+            }
+            FnArgKind::Typed(pt) => {
+                let pat = &pt.pat;
+                let ty = &pt.ty;
+                inputs.push(quote! { #pat: #ty });
+            }
+        }
+    }
+    let ret_ty: TokenStream2 = match &orig.output {
+        ReturnType::Default => quote! {},
+        ReturnType::Type(_, _, _, ty) => quote! { -> #ty },
+    };
+    let where_clause: TokenStream2 = match &generics.where_clause {
+        Some(wc) => quote! { #wc },
+        None => quote! {},
+    };
+    quote! { #generics ( #(#inputs),* ) #ret_ty #where_clause }
 }
 
 pub fn expand(input: TokenStream, verified: bool) -> TokenStream {
@@ -3386,7 +4810,35 @@ pub fn expand(input: TokenStream, verified: bool) -> TokenStream {
     // the proptest harnesses, so the harnesses can call the generated
     // `__pbt_to_exec_*` converters and `pbt_strategy::<UserType>()` directly.
     let mod_name = fresh_mod_name();
-    let test_mod = if harnesses_tokens.is_empty() && classified.user_types.is_empty() {
+
+    // Emit per-fn mutant fns + per-mutant runners + metadata for
+    // `#[pbt_cov_mutate]`-marked targets. Each marked fn is mutated by
+    // the body-mutator visitor, producing N parallel fns plus N runner
+    // fns. The runners are aggregated via `__pbt_mutation_report`,
+    // which is a `#[test]` that drives them in-process (no external
+    // tooling).
+    let cov_mutate_block: TokenStream2 = match emit_cov_mutate_block(
+        &classified,
+    ) {
+        Ok(ts) => ts,
+        Err(e) => return e.to_compile_error().into(),
+    };
+
+    // Build the inline-assert harness block: emits checker fns +
+    // `#[test]`s for `#[pbt]`-marked asserts inside fn bodies. Returns
+    // empty when there are no inline-assert targets.
+    let inline_assert_block: TokenStream2 = match emit_inline_assert_block(
+        &classified,
+    ) {
+        Ok(ts) => ts,
+        Err(e) => return e.to_compile_error().into(),
+    };
+
+    let test_mod = if harnesses_tokens.is_empty()
+        && classified.user_types.is_empty()
+        && classified.cov_mutate_targets.is_empty()
+        && classified.inline_assert_targets.is_empty()
+    {
         quote! {}
     } else {
         quote! {
@@ -3400,6 +4852,8 @@ pub fn expand(input: TokenStream, verified: bool) -> TokenStream {
                 #strategy_block
                 #external_companions
                 #(#harnesses_tokens)*
+                #cov_mutate_block
+                #inline_assert_block
             }
         }
     };

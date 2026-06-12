@@ -25,7 +25,8 @@ verus! {
 // `ar@.index(i as int)` lowers to indexing the slice.
 // ---------------------------------------------------------------------------
 
-#[pbt(T = u32, N = 4)]
+#[pbt(T = u32, N = 8)]
+#[pbt_cov_mutate]
 pub exec fn array_index_get<T: Copy, const N: usize>(ar: &[T; N], i: usize) -> (out: T)
     requires
         i < N,

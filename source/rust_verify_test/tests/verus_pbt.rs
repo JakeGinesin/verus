@@ -1600,3 +1600,258 @@ test_verify_one_file! {
         }
     } => Err(e) => assert_eq!(e.errors.len(), 1)
 }
+
+// ---------------------------------------------------------------------------
+// Tier (cov-mutate): #[pbt_cov_mutate] attribute is recognized and produces
+// a syntactically valid Verus block. The runtime side (cargo-mutants drive
+// + report) is exercised in the example crate; these tests ensure the
+// macro accepts the attribute and emits well-formed code.
+// ---------------------------------------------------------------------------
+
+test_verify_one_file! {
+    // Bare `#[pbt_cov_mutate]` on a free fn coexists with `#[pbt]`.
+    #[test] test_verus_pbt_cov_mutate_bare IMPORTS.to_string() + verus_code_str! {
+        #[allow(unused_imports)] use vstd::contrib::verus_pbt::*;
+
+        #[pbt_cov_mutate]
+        #[pbt]
+        #[verifier::external_body]
+        pub fn double(x: u32) -> (y: u32)
+            requires x < 100,
+            ensures y == x + x,
+        {
+            x + x
+        }
+    } => Ok(())
+}
+
+test_verify_one_file! {
+    // `#[pbt_cov_mutate(threshold = 90)]` parses correctly.
+    #[test] test_verus_pbt_cov_mutate_threshold IMPORTS.to_string() + verus_code_str! {
+        #[allow(unused_imports)] use vstd::contrib::verus_pbt::*;
+
+        #[pbt_cov_mutate(threshold = 90)]
+        #[pbt]
+        #[verifier::external_body]
+        pub fn add_one(x: u32) -> (y: u32)
+            requires x < u32::MAX,
+            ensures y == x + 1,
+        {
+            x + 1
+        }
+    } => Ok(())
+}
+
+test_verify_one_file! {
+    // `#[pbt_cov_mutate(skip)]` parses correctly.
+    #[test] test_verus_pbt_cov_mutate_skip IMPORTS.to_string() + verus_code_str! {
+        #[allow(unused_imports)] use vstd::contrib::verus_pbt::*;
+
+        #[pbt_cov_mutate(skip)]
+        #[pbt]
+        #[verifier::external_body]
+        pub fn id(x: u32) -> (y: u32) ensures y == x, { x }
+    } => Ok(())
+}
+
+test_verify_one_file! {
+    // `#[pbt_cov_mutate]` on an impl method.
+    #[test] test_verus_pbt_cov_mutate_impl_method IMPORTS.to_string() + verus_code_str! {
+        #[allow(unused_imports)] use vstd::contrib::verus_pbt::*;
+
+        #[pbt_provide]
+        pub struct Counter { pub n: u64 }
+
+        #[pbt_provide]
+        impl Counter {
+            pub closed spec fn value(&self) -> u64 { self.n }
+        }
+
+        impl Counter {
+            #[pbt_cov_mutate]
+            #[pbt]
+            #[verifier::external_body]
+            pub fn double_n(&self) -> (out: u64)
+                requires self.value() < u64::MAX / 2,
+                ensures out == self.value() + self.value(),
+            {
+                self.n + self.n
+            }
+        }
+    } => Ok(())
+}
+
+test_verify_one_file! {
+    // Full body shape: a fn with several mutation-able operators. The
+    // macro should produce engine-compilable output containing the
+    // mutant fns + runners + report test, even when the body has many
+    // sites.
+    #[test] test_verus_pbt_cov_mutate_multi_site IMPORTS.to_string() + verus_code_str! {
+        #[allow(unused_imports)] use vstd::contrib::verus_pbt::*;
+
+        pub open spec fn spec_busy(a: u8, b: u8) -> u32 {
+            (a as u32 + b as u32) as u32
+        }
+
+        #[pbt_cov_mutate]
+        #[pbt]
+        #[verifier::external_body]
+        pub fn busy(a: u8, b: u8) -> (y: u32)
+            ensures y == spec_busy(a, b),
+        {
+            // Multiple operators: arith + cast + comparison through
+            // an if. The mutator finds one site per `+` swap, plus
+            // const-flip on each int literal, plus return-default.
+            if a > 0u8 { a as u32 + b as u32 } else { 0u32 }
+        }
+    } => Ok(())
+}
+
+test_verify_one_file! {
+    // Combined attributes: `#[pbt_cov_mutate]` and `#[pbt(T = ...)]`
+    // (generic instantiation) on the same fn. The cov path inherits
+    // the substitution because the fn body has already been
+    // instantiated by the time classify runs.
+    #[test] test_verus_pbt_cov_mutate_with_generic_inst
+        IMPORTS.to_string() + verus_code_str! {
+        #[allow(unused_imports)] use vstd::contrib::verus_pbt::*;
+
+        #[pbt_cov_mutate]
+        #[pbt(T = u32)]
+        #[verifier::external_body]
+        pub fn pick_first<T: Copy>(v: Vec<T>, fallback: T) -> (y: T)
+            ensures y == if v.len() > 0 { v[0] } else { fallback },
+        {
+            if v.len() > 0 { v[0] } else { fallback }
+        }
+    } => Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// `#[pbt]` on inline asserts.
+//
+// These tests cover the discovery + emission pipeline for the inline
+// `#[pbt] assert(P)` and `#[pbt] assert forall |...| P by { }` forms.
+// Each test verifies that:
+//   - The macro accepts the `#[pbt]` marker on the assert.
+//   - The marker is stripped before the verifier sees it (no
+//     "unknown attribute" error).
+//   - The fn still verifies under the assumed-correct contract.
+//
+// The harness fns themselves are `#[cfg(test)]` and not exercised by
+// these tests — running them requires `cargo test` on a downstream
+// crate, which is covered by the `examples/verus_pbt_assert/` demo.
+// ---------------------------------------------------------------------------
+
+test_verify_one_file! {
+    // Path-form inline assert on a free fn. The `#[pbt]` marker on
+    // the `assert(...)` should be stripped, the assert itself should
+    // still verify, and the fn should pass through cleanly.
+    #[test] test_verus_pbt_inline_assert_path_free_fn
+        IMPORTS.to_string() + verus_code_str! {
+        #[allow(unused_imports)] use vstd::contrib::verus_pbt::*;
+
+        #[pbt]
+        #[verifier::external_body]
+        pub fn add_inline_check(x: u32, y: u32) -> (r: u32)
+            requires x <= u32::MAX / 2, y <= u32::MAX / 2,
+            ensures r == (x + y) as u32,
+        {
+            let z = x + y;
+            #[pbt] assert(z >= x);
+            z
+        }
+    } => Ok(())
+}
+
+test_verify_one_file! {
+    // Forall-form inline assert. The `#[pbt]` marker on the
+    // `assert forall |...| ... by { }` should be stripped, the
+    // forall itself is left for Verus to discharge.
+    #[test] test_verus_pbt_inline_assert_forall_basic
+        IMPORTS.to_string() + verus_code_str! {
+        #[allow(unused_imports)] use vstd::contrib::verus_pbt::*;
+
+        #[pbt]
+        #[verifier::external_body]
+        pub fn double_with_forall(x: u32) -> (r: u32)
+            requires x <= u32::MAX / 2,
+            ensures r == (x + x) as u32,
+        {
+            let r = x + x;
+            #[pbt] assert forall |w: u32|
+                w <= u32::MAX / 2u32 implies w + w == 2u32 * w by { };
+            r
+        }
+    } => Ok(())
+}
+
+test_verify_one_file! {
+    // Multiple inline asserts in the same fn — markers must be
+    // stripped from each one independently. Mixing path-form and
+    // forall-form is allowed.
+    #[test] test_verus_pbt_inline_assert_multiple
+        IMPORTS.to_string() + verus_code_str! {
+        #[allow(unused_imports)] use vstd::contrib::verus_pbt::*;
+
+        #[pbt]
+        #[verifier::external_body]
+        pub fn double_path_and_forall(x: u32) -> (r: u32)
+            requires x <= u32::MAX / 2,
+            ensures r == (x + x) as u32,
+        {
+            let r = x + x;
+            #[pbt] assert(r >= x);
+            #[pbt] assert forall |w: u32|
+                w <= u32::MAX / 2u32 implies w + w == 2u32 * w by { };
+            r
+        }
+    } => Ok(())
+}test_verify_one_file! {
+    // Inline assert inside an `if` branch. The discovery walker
+    // must descend into nested blocks; the rewriter must also
+    // rewrite the assert at the right ordinal regardless of depth.
+    #[test] test_verus_pbt_inline_assert_in_if_branch
+        IMPORTS.to_string() + verus_code_str! {
+        #[allow(unused_imports)] use vstd::contrib::verus_pbt::*;
+
+        #[pbt]
+        #[verifier::external_body]
+        pub fn maybe_double(x: u32, b: bool) -> (r: u32)
+            requires x <= u32::MAX / 2,
+            ensures r == if b { (x + x) as u32 } else { x },
+        {
+            if b {
+                let r = x + x;
+                #[pbt] assert(r >= x);
+                r
+            } else {
+                x
+            }
+        }
+    } => Ok(())
+}
+
+test_verify_one_file! {
+    // Inline assert on an impl method's `&self` body. The marker
+    // strip + harness emission needs to handle method receivers.
+    #[test] test_verus_pbt_inline_assert_on_method
+        IMPORTS.to_string() + verus_code_str! {
+        #[allow(unused_imports)] use vstd::contrib::verus_pbt::*;
+
+        pub struct Counter { pub n: u32 }
+
+        impl Counter {
+            #[pbt]
+            #[verifier::external_body]
+            pub fn incr(&self, k: u32) -> (r: u32)
+                requires self.n <= u32::MAX / 2, k <= u32::MAX / 2,
+                ensures r == (self.n + k) as u32,
+            {
+                let r = self.n + k;
+                #[pbt] assert(r >= self.n);
+                r
+            }
+        }
+    } => Ok(())
+}

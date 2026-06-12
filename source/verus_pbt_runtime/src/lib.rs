@@ -234,3 +234,22 @@ pub fn __pbt_seq_push<T>(mut v: Vec<T>, x: T) -> Vec<T> {
     v.push(x);
     v
 }
+
+
+// ---------------------------------------------------------------------------
+// Mutation-coverage report for #[pbt_cov_mutate]-marked fns.
+//
+// The macro emits one `PbtCovMutateTarget` constant per marked fn and a
+// single `__pbt_mutation_report` test that hands the slice of targets to
+// `run_mutation_report`. The runner shells out to `cargo-mutants`,
+// scoping mutations to each target's body and re-running only the
+// matching harness, then prints a per-fn kill-rate report. See the
+// crate's MUTATION_TESTING.md for the full workflow.
+//
+// The runner is a no-op when:
+//   * the env var `VERUS_PBT_MUTATION_DRIVING` is set (re-entrancy guard
+//     for cargo-mutants's child invocations);
+//   * the `targets` slice is empty (no fn in this crate uses the
+//     attribute).
+
+pub mod cov_mutate;
