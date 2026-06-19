@@ -175,7 +175,6 @@ pub(crate) fn compile_type(typ: &Type, ctx: TypeKind) -> Result<TokenStream2, Er
                     || type_path.path.segments[0].ident.to_string() == "HashSet"
                     || type_path.path.segments[0].ident.to_string() == "ExecMultiset"
                     || type_path.path.segments[0].ident.to_string() == "String"
-                    || type_path.path.segments[0].ident.to_string() == "str"
                     || type_path.path.segments[0].ident.to_string() == "nat"
                     || type_path.path.segments[0].ident.to_string() == "int"
                 {
@@ -201,17 +200,40 @@ pub(crate) fn compile_type(typ: &Type, ctx: TypeKind) -> Result<TokenStream2, Er
             };
         }
 
+        // `&str` parameters and returns: treat the same as `SpecString` (=
+        // `Seq<char>`) — at runtime they're already the right shape, just
+        // not via the `ExecSpecType` trait. This lets spec fns whose
+        // signatures use `&str` (rather than `SpecString`) compile through
+        // the engine without bouncing off the trait lookup.
+        Type::Reference(type_ref) => {
+            if let Type::Path(tp) = type_ref.elem.as_ref() {
+                if tp.qself.is_none()
+                    && tp.path.segments.len() == 1
+                    && tp.path.segments[0].ident == "str"
+                    && matches!(tp.path.segments[0].arguments, PathArguments::None)
+                {
+                    return match ctx {
+                        TypeKind::Owned => Ok(quote_spanned! { span => String }),
+                        TypeKind::Ref => Ok(quote_spanned! { span => &str }),
+                    };
+                }
+            }
+            // Other reference types fall through to the ExecSpecType
+            // trait-lookup path, which will error if not implemented.
+        }
+
         _ => {}
     }
 
     // Otherwise we assume that the type has
     // ExecSpecType implemented
+    let vstd = crate::syntax::Vstd(span);
     Ok(match ctx {
         TypeKind::Owned => {
-            quote_spanned! { span => <#typ as vstd::contrib::exec_spec::ExecSpecType>::ExecOwnedType }
+            quote_spanned! { span => <#typ as #vstd::contrib::exec_spec::ExecSpecType>::ExecOwnedType }
         }
         TypeKind::Ref => {
-            quote_spanned! { span => <#typ as vstd::contrib::exec_spec::ExecSpecType>::ExecRefType<'_> }
+            quote_spanned! { span => <#typ as #vstd::contrib::exec_spec::ExecSpecType>::ExecRefType<'_> }
         }
     })
 }
@@ -370,6 +392,7 @@ fn compile_struct(item_struct: &ItemStruct) -> Result<TokenStream2, Error> {
     };
 
     let span = item_struct.span();
+    let vstd = crate::syntax::Vstd(span);
     Ok(quote_spanned! { span =>
         #[verifier::ext_equal]
         #item_struct
@@ -377,18 +400,18 @@ fn compile_struct(item_struct: &ItemStruct) -> Result<TokenStream2, Error> {
         #[derive(Eq, Hash, PartialEq, Debug)]
         #vis struct #exec_name #exec_fields
 
-        impl vstd::contrib::exec_spec::ExecSpecType for #spec_name {
+        impl #vstd::contrib::exec_spec::ExecSpecType for #spec_name {
             type ExecOwnedType = #exec_name;
             type ExecRefType<'a> = &'a #exec_name;
         }
 
-        impl<'a> vstd::contrib::exec_spec::ToRef<&'a #exec_name> for &'a #exec_name {
+        impl<'a> #vstd::contrib::exec_spec::ToRef<&'a #exec_name> for &'a #exec_name {
             fn get_ref(self) -> &'a #exec_name {
                 self
             }
         }
 
-        impl<'a> vstd::contrib::exec_spec::ToOwned<#exec_name> for &'a #exec_name {
+        impl<'a> #vstd::contrib::exec_spec::ToOwned<#exec_name> for &'a #exec_name {
             fn get_owned(self) -> #exec_name {
                 self.deep_clone()
             }
@@ -403,13 +426,13 @@ fn compile_struct(item_struct: &ItemStruct) -> Result<TokenStream2, Error> {
             }
         }
 
-        impl vstd::contrib::exec_spec::DeepViewClone for #exec_name {
+        impl #vstd::contrib::exec_spec::DeepViewClone for #exec_name {
             fn deep_clone(&self) -> Self {
                 #clone_body
             }
         }
 
-        impl<'a> vstd::contrib::exec_spec::ExecSpecEq<'a> for &'a #exec_name {
+        impl<'a> #vstd::contrib::exec_spec::ExecSpecEq<'a> for &'a #exec_name {
             type Other = &'a #exec_name;
 
             fn exec_eq(this: Self, other: Self::Other) -> bool {
@@ -672,6 +695,7 @@ fn compile_enum(item_enum: &ItemEnum) -> Result<TokenStream2, Error> {
     };
 
     let span = item_enum.span();
+    let vstd = crate::syntax::Vstd(span);
     Ok(quote_spanned! { span =>
         #[verifier::ext_equal]
         #item_enum
@@ -681,18 +705,18 @@ fn compile_enum(item_enum: &ItemEnum) -> Result<TokenStream2, Error> {
             #(#exec_variants,)*
         }
 
-        impl vstd::contrib::exec_spec::ExecSpecType for #spec_name {
+        impl #vstd::contrib::exec_spec::ExecSpecType for #spec_name {
             type ExecOwnedType = #exec_name;
             type ExecRefType<'a> = &'a #exec_name;
         }
 
-        impl<'a> vstd::contrib::exec_spec::ToRef<&'a #exec_name> for &'a #exec_name {
+        impl<'a> #vstd::contrib::exec_spec::ToRef<&'a #exec_name> for &'a #exec_name {
             fn get_ref(self) -> &'a #exec_name {
                 self
             }
         }
 
-        impl<'a> vstd::contrib::exec_spec::ToOwned<#exec_name> for &'a #exec_name {
+        impl<'a> #vstd::contrib::exec_spec::ToOwned<#exec_name> for &'a #exec_name {
             fn get_owned(self) -> #exec_name {
                 self.deep_clone()
             }
@@ -709,7 +733,7 @@ fn compile_enum(item_enum: &ItemEnum) -> Result<TokenStream2, Error> {
             }
         }
 
-        impl vstd::contrib::exec_spec::DeepViewClone for #exec_name {
+        impl #vstd::contrib::exec_spec::DeepViewClone for #exec_name {
             fn deep_clone(&self) -> Self {
                 match self {
                     #(#clone_variant_arms,)*
@@ -718,7 +742,7 @@ fn compile_enum(item_enum: &ItemEnum) -> Result<TokenStream2, Error> {
         }
 
         #[allow(unreachable_patterns)] // false branch may be unreachable if enum has only one variant
-        impl<'a> vstd::contrib::exec_spec::ExecSpecEq<'a> for &'a #exec_name {
+        impl<'a> #vstd::contrib::exec_spec::ExecSpecEq<'a> for &'a #exec_name {
             type Other = &'a #exec_name;
 
             fn exec_eq(this: Self, other: Self::Other) -> bool {
@@ -735,11 +759,71 @@ fn compile_enum(item_enum: &ItemEnum) -> Result<TokenStream2, Error> {
     })
 }
 
-/// Replaces every occurrence of the `self` ident in a token stream with `replacement`.
-/// Used to splice spec `recommends`/`decreases` clauses (which reference `self`)
-/// into the generated exec method's `requires`/`decreases`, where `self` is
-/// shadowed by a deep-view binding.
-fn replace_self_tokens(ts: TokenStream2, replacement: &Ident) -> TokenStream2 {
+/// Token-level rewrite of `self` to a non-keyword identifier in spec-mode
+/// clause expressions. Walks the token stream depth-first (recursing into
+/// `Group`s so `self` inside parens / brackets / braces is also rewritten)
+/// and replaces every literal `self` ident with `replacement`. Span on each
+/// rewritten token is preserved from the original `self` so diagnostics
+/// still point at the user's source.
+///
+/// ## Why this exists
+///
+/// When `compile_sig` translates an impl method's spec contract into the
+/// generated exec companion, the user's `requires` / `recommends` /
+/// `decreases` clauses were authored in spec-world: `self` in those
+/// clauses means "a value of the spec self type" (e.g. `&Counter`). The
+/// generated exec method's `self` is the runtime mirror (`&ExecCounter`),
+/// a structurally different type. Copying the clauses verbatim would
+/// type-check the wrong way — calls like `self.is_valid_spec()` would
+/// resolve to the exec companion (or fail to resolve), and field accesses
+/// might not match because the mirror sometimes has different field types
+/// than the spec.
+///
+/// ## How the rewrite is consumed
+///
+/// `compile_sig` emits a deep-view snapshot at the top of the exec method
+/// body:
+///
+/// ```ignore
+/// let __exec_spec_self_view: <SelfTy> = self.deep_view();
+/// ```
+///
+/// then runs every clause expression through this function with
+/// `replacement = __exec_spec_self_view`. The rewritten clause sees a
+/// spec-typed local where the user wrote `self`, so it type-checks and
+/// reasons in the spec universe.
+///
+/// ## Why a token-level rewrite (and not a `let self = ...` shadow)
+///
+/// `self` is a Rust keyword. `let self = ...` is a syntax error, so we
+/// can't directly shadow the receiver. The synthetic name avoids the
+/// keyword conflict.
+///
+/// ## What it doesn't handle (and why that's fine)
+///
+/// The rewrite is scope-agnostic: any token that prints as `self` becomes
+/// the replacement, regardless of whether it's the method receiver or
+/// some other binding. In practice no other `self` binding can exist,
+/// because `self` is a strict keyword in every Rust edition: per the
+/// [Rust Reference](https://doc.rust-lang.org/reference/keywords.html),
+/// strict keywords "cannot be used as the names of variables and
+/// function parameters, fields and variants, type parameters, lifetime
+/// parameters or loop labels, macros or attributes, macro placeholders,
+/// crates." That covers `let` patterns, match arm bindings, `if let`
+/// bindings, function parameters, and (transitively, since closure
+/// parameters are irrefutable patterns) closure parameter names. So
+/// the only `self` reachable in a clause is the method receiver, and
+/// the blunt rewrite is correct for all valid input. If a future Rust
+/// edition reclassifies `self` to a non-strict keyword, this function
+/// would need scope tracking; until then, the simple walk suffices.
+///
+/// ## Idempotence
+///
+/// Running this twice with the same `replacement` is a no-op after the
+/// first pass (no `self` tokens remain). Running it with a different
+/// `replacement` would clobber the first rewrite; not a concern in
+/// current callers since there's exactly one call site.
+pub(crate) fn replace_self_tokens(ts: TokenStream2, replacement: &Ident) -> TokenStream2 {
     ts.into_iter()
         .map(|tt| match tt {
             TokenTree::Ident(ident) if ident == "self" => {
@@ -2227,13 +2311,15 @@ fn compile_expr(
             BinOp::Eq(..) => {
                 let left = compile_expr(ctx, &expr_binary.left, VarMode::Ref, unverified)?;
                 let right = compile_expr(ctx, &expr_binary.right, VarMode::Ref, unverified)?;
-                quote! { vstd::contrib::exec_spec::ExecSpecEq::exec_eq(#left, #right) }
+                let vstd = crate::syntax::Vstd(expr_binary.op.span());
+                quote! { #vstd::contrib::exec_spec::ExecSpecEq::exec_eq(#left, #right) }
             }
 
             BinOp::Ne(..) => {
                 let left = compile_expr(ctx, &expr_binary.left, VarMode::Ref, unverified)?;
                 let right = compile_expr(ctx, &expr_binary.right, VarMode::Ref, unverified)?;
-                quote! { !vstd::contrib::exec_spec::ExecSpecEq::exec_eq(#left, #right) }
+                let vstd = crate::syntax::Vstd(expr_binary.op.span());
+                quote! { !#vstd::contrib::exec_spec::ExecSpecEq::exec_eq(#left, #right) }
             }
 
             // TODO
@@ -2288,7 +2374,8 @@ fn compile_expr(
             BinOp::Equiv(..) => {
                 let left = compile_expr(ctx, &expr_binary.left, VarMode::Ref, unverified)?;
                 let right = compile_expr(ctx, &expr_binary.right, VarMode::Ref, unverified)?;
-                quote! { vstd::contrib::exec_spec::ExecSpecEq::exec_eq(#left, #right) }
+                let vstd = crate::syntax::Vstd(expr_binary.op.span());
+                quote! { #vstd::contrib::exec_spec::ExecSpecEq::exec_eq(#left, #right) }
             }
 
             // No plan to support
@@ -2391,10 +2478,10 @@ fn compile_expr(
                 quote! { #op #expr }
             }
             UnOp::Deref(..) => {
-                // `*x` is typically used to read a copy of `x` when `x` was
-                // bound by a `match` arm (binding mode `&T`). We request the
-                // inner expression as owned (which deep-clones), then adapt
-                // to the caller's requested mode.
+                // `*x` reads the value behind a reference. Compile the
+                // inner expression in owned mode (read-by-copy for
+                // primitives, `deep_clone` for non-Copy types), then
+                // re-borrow via `get_ref()` if the caller wants a ref.
                 let inner = compile_expr(ctx, &expr_unary.expr, VarMode::Owned, unverified)?;
                 match mode {
                     VarMode::Owned => quote! { #inner },

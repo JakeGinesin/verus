@@ -1,4 +1,6 @@
 #![allow(unused_imports)]
+#[cfg(all(feature = "alloc", feature = "std"))]
+use super::contrib::exec_spec::*;
 use super::prelude::*;
 use super::seq::*;
 use super::slice::SliceAdditionalSpecFns;
@@ -82,6 +84,22 @@ pub exec fn array_index_get<T, const N: usize>(ar: &[T; N], i: usize) -> (out: &
     &ar[i]
 }
 
+// PBT-specific wrapper exercising `array_index_get` at concrete `T = u8, N = 4`.
+// Lives alongside the production fn (rather than marking the production fn
+// directly) because `#[pbt(T=u8, N=4)]` on a generic exec fn would
+// monomorphize the only copy. Real callers still see the generic version.
+#[doc(hidden)]
+#[pbt]
+#[verifier::external_body]
+pub exec fn __pbt_array_index_get_u8_4(ar: &[u8; 4], i: usize) -> (out: u8)
+    requires
+        0 <= i < 4,
+    ensures
+        out == ar@.index(i as int),
+{
+    ar[i]
+}
+
 pub broadcast axiom fn array_len_matches_n<T, const N: usize>(ar: &[T; N])
     ensures
         (#[trigger] ar@.len()) == N,
@@ -140,6 +158,7 @@ pub fn array_as_slice<T, const N: usize>(ar: &[T; N]) -> (out: &[T])
     ar
 }
 
+#[pbt(T = u8, N = 4)]
 pub assume_specification<T, const N: usize>[ <[T; N]>::as_slice ](ar: &[T; N]) -> (out: &[T])
     ensures
         ar@ == out@,

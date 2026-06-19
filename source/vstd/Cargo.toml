@@ -25,6 +25,10 @@ verus_builtin_macros = { version = "=0.0.0-2026-05-31-0205", path = "../builtin_
 verus_builtin = { version = "=0.0.0-2026-05-17-0151", path = "../builtin" }
 verus_state_machines_macros = { version = "=0.0.0-2026-05-31-0205", path = "../state_machines_macros" }
 
+[dev-dependencies]
+proptest = "1"
+verus_pbt_runtime = { version = "=0.0.0-2026-05-31-0205", path = "../verus_pbt_runtime" }
+
 [features]
 default = ["std"]
 std = ["alloc"]

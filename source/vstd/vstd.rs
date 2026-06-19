@@ -82,6 +82,11 @@ pub mod wrapping;
 #[cfg(verus_keep_ghost)]
 pub mod std_specs;
 
+// PBT-only stdlib spec mirrors. Gated `#[cfg(not(verus_keep_ghost))]`
+// internally so the verifier keeps using `std_specs/*` as canonical and
+// doesn't see duplicate `assume_specification` items.
+pub mod pbt_stdlib;
+
 // Re-exports all vstd types, traits, and functions that are commonly used or replace
 // regular `core` or `std` definitions.
 pub mod prelude;

@@ -421,7 +421,8 @@ fn classify(items: Vec<Item>) -> Classified {
                 // target that the harness should sample and run.
                 FnMode::Default | FnMode::Exec(..) => {
                     let has_contract = item_fn.sig.spec.requires.is_some()
-                        || item_fn.sig.spec.ensures.is_some();
+                        || item_fn.sig.spec.ensures.is_some()
+                        || item_fn.sig.spec.returns.is_some();
                     if has_contract {
                         contract_targets.push(ContractTarget::FreeFn(item_fn.clone()));
                     }
@@ -468,6 +469,12 @@ fn classify(items: Vec<Item>) -> Classified {
                 //   2. All exec methods → passthrough; harvest contracts.
                 //   3. Mixed → split into two impl blocks.
                 let self_ty_ident = impl_self_ty_ident(item_impl);
+                // If the impl block has any sentinel-marked method, only
+                // sentinel-bearing methods become harness targets. Without
+                // the sentinel (e.g. `#[pbt]` was on the type, not on
+                // individual methods), every contract-bearing exec method
+                // is a target — preserves prior behavior.
+                let impl_has_sentinel = impl_has_harness_sentinel(item_impl);
                 let mut spec_methods: Vec<verus_syn::ImplItem> = Vec::new();
                 let mut exec_methods: Vec<verus_syn::ImplItem> = Vec::new();
                 let mut other_items: Vec<verus_syn::ImplItem> = Vec::new();
@@ -508,8 +515,14 @@ fn classify(items: Vec<Item>) -> Classified {
                                     method_clone.clone(),
                                 ));
                                 let has_contract = impl_fn.sig.spec.requires.is_some()
-                                    || impl_fn.sig.spec.ensures.is_some();
-                                if has_contract {
+                                    || impl_fn.sig.spec.ensures.is_some()
+                                    || impl_fn.sig.spec.returns.is_some();
+                                let is_harness_target = if impl_has_sentinel {
+                                    impl_fn_has_harness_sentinel(impl_fn)
+                                } else {
+                                    true
+                                };
+                                if has_contract && is_harness_target {
                                     if let Some(self_ty) = self_ty_ident.clone() {
                                         contract_targets.push(ContractTarget::Method {
                                             self_ty,
@@ -779,6 +792,39 @@ fn impl_self_ty_ident(item_impl: &ItemImpl) -> Option<Ident> {    if item_impl.t
     None
 }
 
+/// True if the impl-fn carries the harness sentinel doc-attribute that the
+/// `pbt_attr` strip pass leaves behind on originally-marked methods. See
+/// `pbt_attr::VERUS_PBT_HARNESS_SENTINEL`.
+fn impl_fn_has_harness_sentinel(f: &verus_syn::ImplItemFn) -> bool {
+    for attr in &f.attrs {
+        let path = attr.path();
+        if path.leading_colon.is_some() || path.segments.len() != 1 {
+            continue;
+        }
+        if path.segments[0].ident != "doc" {
+            continue;
+        }
+        if let verus_syn::Meta::NameValue(nv) = &attr.meta {
+            if let verus_syn::Expr::Lit(lit) = &nv.value {
+                if let verus_syn::Lit::Str(s) = &lit.lit {
+                    if s.value() == super::pbt_attr::VERUS_PBT_HARNESS_SENTINEL {
+                        return true;
+                    }
+                }
+            }
+        }
+    }
+    false
+}
+
+/// True if any method in the impl block carries the harness sentinel.
+fn impl_has_harness_sentinel(item_impl: &ItemImpl) -> bool {
+    item_impl.items.iter().any(|ii| match ii {
+        verus_syn::ImplItem::Fn(f) => impl_fn_has_harness_sentinel(f),
+        _ => false,
+    })
+}
+
 // ---------------------------------------------------------------------------
 // Param / return type analysis
 // ---------------------------------------------------------------------------
@@ -803,6 +849,8 @@ enum ParamShape {
     RefArray(ParamElem, Expr),
     /// `Option<E>`.
     OwnedOption(ParamElem),
+    /// `Result<T, E>`. Both T and E are `ParamElem` (one level of nesting).
+    OwnedResult(ParamElem, ParamElem),
     /// `HashMap<K, V>`. Both K and V are `ParamElem`.
     OwnedHashMap(ParamElem, ParamElem),
     /// `HashSet<E>`.
@@ -876,6 +924,11 @@ impl ParamShape {
                 let inner = e.harness_type();
                 quote! { ::std::option::Option<#inner> }
             }
+            ParamShape::OwnedResult(t, e) => {
+                let t_ty = t.harness_type();
+                let e_ty = e.harness_type();
+                quote! { ::std::result::Result<#t_ty, #e_ty> }
+            }
             ParamShape::OwnedHashMap(k, v) => {
                 let kt = k.harness_type();
                 let vt = v.harness_type();
@@ -925,10 +978,14 @@ impl ParamShape {
                 }
             }
             ParamShape::OwnedOption(_) => quote! { #harness_ident.clone() },
+            ParamShape::OwnedResult(_, _) => quote! { #harness_ident.clone() },
             ParamShape::OwnedHashMap(_, _) => quote! { #harness_ident.clone() },
             ParamShape::OwnedHashSet(_) => quote! { #harness_ident.clone() },
-            ParamShape::OwnedMultiset(_) => quote! {
-                ::vstd::contrib::exec_spec::ExecMultiset { m: #harness_ident.clone() }
+            ParamShape::OwnedMultiset(_) => {
+                let v = crate::syntax::Vstd(harness_ident.span());
+                quote! {
+                    #v::contrib::exec_spec::ExecMultiset { m: #harness_ident.clone() }
+                }
             },
             // The user's exec fn takes their OWN type (`&User` / `User`).
             ParamShape::RefUserType(_) => quote! { &#harness_ident },
@@ -997,10 +1054,14 @@ impl ParamShape {
                 quote! { #harness_ident.as_slice() }
             }
             ParamShape::OwnedOption(_) => quote! { &#harness_ident },
+            ParamShape::OwnedResult(_, _) => quote! { &#harness_ident },
             ParamShape::OwnedHashMap(_, _) => quote! { &#harness_ident },
             ParamShape::OwnedHashSet(_) => quote! { &#harness_ident },
-            ParamShape::OwnedMultiset(_) => quote! {
-                &::vstd::contrib::exec_spec::ExecMultiset { m: #harness_ident.clone() }
+            ParamShape::OwnedMultiset(_) => {
+                let v = crate::syntax::Vstd(harness_ident.span());
+                quote! {
+                    &#v::contrib::exec_spec::ExecMultiset { m: #harness_ident.clone() }
+                }
             },
             ParamShape::RefUserType(name) | ParamShape::OwnedUserType(name) => {
                 // Fully-qualified trait call so it (a) resolves across files
@@ -1062,6 +1123,7 @@ impl ParamShape {
                 ::verus_pbt_runtime::__pbt_str_chars(&#snap).as_slice()
             }),
             ParamShape::OwnedOption(_)
+            | ParamShape::OwnedResult(_, _)
             | ParamShape::OwnedHashMap(_, _)
             | ParamShape::OwnedHashSet(_)
             | ParamShape::OwnedUserType(_) => Some(quote! { &#snap }),
@@ -1117,6 +1179,17 @@ impl ParamShape {
                     ParamElem::UserType(n) => quote! { #n },
                 };
                 quote! { Option<#inner> }
+            }
+            ParamShape::OwnedResult(t, e) => {
+                let tt = match t {
+                    ParamElem::Primitive(t) => quote! { #t },
+                    ParamElem::UserType(n) => quote! { #n },
+                };
+                let et = match e {
+                    ParamElem::Primitive(t) => quote! { #t },
+                    ParamElem::UserType(n) => quote! { #n },
+                };
+                quote! { Result<#tt, #et> }
             }
             ParamShape::OwnedHashMap(k, v) => {
                 let kt = match k {
@@ -1260,6 +1333,7 @@ Pass the data by `&mut String` so the harness can snapshot it.",
                     | ParamShape::OwnedHashSet(_)
                     | ParamShape::OwnedString
                     | ParamShape::OwnedOption(_)
+                    | ParamShape::OwnedResult(_, _)
                     | ParamShape::OwnedUserType(_)
                     | ParamShape::Primitive(_) => {}
                     _ => {
@@ -1360,6 +1434,18 @@ here doesn't fit; pass an owned form instead.",
                         Error::new_spanned(ty, "verus_pbt: expected Option<T> with a type argument")
                     })?;
                     Ok(ParamShape::OwnedOption(classify_param_elem(inner, user_types)?))
+                }
+                "Result" => {
+                    let (t, e) = first_two_type_args(&seg.arguments).ok_or_else(|| {
+                        Error::new_spanned(
+                            ty,
+                            "verus_pbt: expected Result<T, E> with two type arguments",
+                        )
+                    })?;
+                    Ok(ParamShape::OwnedResult(
+                        classify_param_elem(t, user_types)?,
+                        classify_param_elem(e, user_types)?,
+                    ))
                 }
                 "HashMap" => {
                     let (k, v) = first_two_type_args(&seg.arguments).ok_or_else(|| {
@@ -1494,6 +1580,8 @@ enum ReturnShape {
     #[allow(dead_code)]
     OwnedArray(ParamElem, Expr),
     OwnedOption(ParamElem),
+    /// `Result<T, E>` returned by value.
+    OwnedResult(ParamElem, ParamElem),
     OwnedHashMap,
     OwnedHashSet,
     OwnedMultiset,
@@ -1517,6 +1605,21 @@ enum ReturnShape {
     /// `String`. Same as `RefStr` for contract purposes; harness binds the
     /// returned `String` and converts to chars on demand.
     OwnedString,
+    /// `core::cmp::Ordering` returned by value. The harness compares against
+    /// `Ordering` constants via `PartialEq` (which `Ordering` derives).
+    /// Recognized regardless of the path qualifier (`Ordering` / `cmp::Ordering`
+    /// / `core::cmp::Ordering` / `std::cmp::Ordering`) so contracts can use
+    /// the common forms.
+    OwnedOrdering,
+    /// A 2-tuple `(A, B)` returned by value. Each element has its own
+    /// `ReturnShape` (boxed for size). Contracts access `.0` / `.1` and
+    /// the harness emits `let ret = call(); let __ret_0 = ret.0; ...`
+    /// to project for `deep_view` evaluation.
+    ///
+    /// Limitation: only 2-tuples are supported in this initial round
+    /// because the most common use case (`<[T]>::split_at` etc.) is
+    /// 2-tuple. Larger arities are rejected with a clean diagnostic.
+    Tuple2(Box<ReturnShape>, Box<ReturnShape>),
 }
 
 fn classify_return(
@@ -1613,10 +1716,27 @@ fn classify_return(
                     })?;
                     Ok(ReturnShape::OwnedOption(classify_param_elem(inner, user_types)?))
                 }
+                "Result" => {
+                    let (t, e) = first_two_type_args(&seg.arguments).ok_or_else(|| {
+                        Error::new_spanned(
+                            ty,
+                            "verus_pbt: expected Result<T, E> in return type",
+                        )
+                    })?;
+                    Ok(ReturnShape::OwnedResult(
+                        classify_param_elem(t, user_types)?,
+                        classify_param_elem(e, user_types)?,
+                    ))
+                }
                 "HashMap" => Ok(ReturnShape::OwnedHashMap),
                 "HashSet" => Ok(ReturnShape::OwnedHashSet),
                 "Multiset" => Ok(ReturnShape::OwnedMultiset),
-                "String" if is_single_seg => Ok(ReturnShape::OwnedString),
+                "String" => Ok(ReturnShape::OwnedString),
+                // `Ordering` / `cmp::Ordering` / `core::cmp::Ordering` /
+                // `std::cmp::Ordering`. We recognize the type by its last
+                // segment name and accept any path prefix because the
+                // canonical form varies across vstd specs.
+                "Ordering" => Ok(ReturnShape::OwnedOrdering),
                 _ => {
                     if is_single_seg && user_types.contains(&name) {
                         Ok(ReturnShape::OwnedUserType(seg.ident.clone()))
@@ -1644,6 +1764,36 @@ and user-defined types (including `Self` inside an impl).",
             }
         }
         Type::Tuple(tt) if tt.elems.is_empty() => Ok(ReturnShape::Unit),
+        Type::Tuple(tt) if tt.elems.len() == 2 => {
+            // 2-tuple return. Each element is classified as if it were
+            // its own return type, then composed into Tuple2. The
+            // recursive call goes through classify_return so each elem
+            // can be e.g. `&[T]` or `Option<T>` etc.
+            let mut iter = tt.elems.iter();
+            let a = iter.next().unwrap();
+            let b = iter.next().unwrap();
+            // Build a synthetic ReturnType for each elem and classify.
+            let synth_a = ReturnType::Type(
+                verus_syn::Token![->](proc_macro2::Span::call_site()),
+                None,
+                None,
+                Box::new(a.clone()),
+            );
+            let synth_b = ReturnType::Type(
+                verus_syn::Token![->](proc_macro2::Span::call_site()),
+                None,
+                None,
+                Box::new(b.clone()),
+            );
+            let sa = classify_return(&synth_a, user_types, self_ty_for_method)?;
+            let sb = classify_return(&synth_b, user_types, self_ty_for_method)?;
+            Ok(ReturnShape::Tuple2(Box::new(sa), Box::new(sb)))
+        }
+        Type::Tuple(_) => Err(Error::new_spanned(
+            ty,
+            "verus_pbt: tuple returns of arity > 2 are not yet supported. \
+             Restructure the spec to return a 2-tuple or a struct.",
+        )),
         _ => Err(Error::new_spanned(
             ty,
             "verus_pbt: unsupported return type. Supported: primitives, `Vec<E>`, \
@@ -1703,6 +1853,13 @@ struct ContractRewriter<'a> {
     /// to insert `__pbt_to_exec_T(&x)` conversions before spec-fn / spec-
     /// method calls that expect the engine `Exec*` form.
     user_typed_idents: &'a HashMap<String, Ident>,
+    /// Idents whose value is owned at the harness level but whose spec-fn
+    /// signature takes a borrow (`&str` for owned `String`, `&[T]` for
+    /// owned `Vec<T>`, etc.). When the rewriter sees `f(<id>)` for a
+    /// known spec fn `f` and `<id>` is in this map, it inserts `&` (or
+    /// `.as_str()` / `.as_slice()` as appropriate). Maps ident-name →
+    /// borrow-form expression.
+    auto_borrow_idents: &'a HashMap<String, TokenStream2>,
     /// `runtime fn name → spec fn name` redirect for
     /// `#[verifier::when_used_as_spec(...)]`. When rewriting `f(args)` in a
     /// contract, we redirect to `exec_<spec_name>(args)` instead of
@@ -1755,10 +1912,13 @@ impl<'a> VisitMut for ContractRewriter<'a> {
         verus_syn::visit_mut::visit_expr_mut(self, expr);
 
         // 0a. Verus spec-integer casts: `x as nat` / `x as int` are spec-
-        // only conversions that have no runtime counterpart. Lower them to
-        // the runtime counterparts the engine uses for those types
-        // (`nat` → `u64`, `int` → `i128`). The harness then operates on
-        // primitive integers for arithmetic.
+        // only conversions that have no runtime counterpart. The previous
+        // approach lowered them to `(x as u64)` / `(x as i128)`, but that
+        // forced both sides of `==` to widen — RHS expressions using
+        // `seq.len()` stayed `usize`, which doesn't compare with `u64`.
+        // Drop the cast entirely; the source value is already an integer
+        // type at runtime and Rust's unification picks a common type if
+        // both sides are integer literals or casts.
         if let Expr::Cast(cast) = expr {
             if let Type::Path(tp) = cast.ty.as_ref() {
                 if tp.qself.is_none()
@@ -1767,13 +1927,8 @@ impl<'a> VisitMut for ContractRewriter<'a> {
                 {
                     let target = tp.path.segments[0].ident.to_string();
                     if target == "nat" || target == "int" {
-                        let runtime: TokenStream2 = if target == "nat" {
-                            quote! { u64 }
-                        } else {
-                            quote! { i128 }
-                        };
                         let inner = (*cast.expr).clone();
-                        *expr = verus_syn::parse_quote! { (#inner as #runtime) };
+                        *expr = verus_syn::parse_quote! { (#inner) };
                         return;
                     }
                 }
@@ -1837,6 +1992,75 @@ impl<'a> VisitMut for ContractRewriter<'a> {
             // Otherwise: just unwrap to the receiver (best-effort).
             *expr = receiver_clone;
             return;
+        }
+
+        // 1b. Spec-only constructors that have a runtime equivalent.
+        // Patterns like `Seq::<char>::empty()`, `Map::<K,V>::empty()`,
+        // `Set::<T>::empty()` appear in contract clauses (e.g. `r@ ==
+        // Seq::<char>::empty()` for a fn that returns an empty container).
+        // The bare constructor call doesn't get lowered through the
+        // spec-fn renaming path because it's not a local spec fn — but the
+        // engine has runtime equivalents (`Vec::new`, `HashMap::new`,
+        // `HashSet::new`). Lower these here so contracts comparing
+        // against them evaluate at runtime.
+        if let Expr::Call(call) = expr {
+            if call.args.is_empty() {
+                if let Expr::Path(ExprPath { path, qself: None, .. }) =
+                    call.func.as_ref()
+                {
+                    let n = path.segments.len();
+                    if n >= 2 {
+                        let container_seg = &path.segments[n - 2];
+                        let method_seg = &path.segments[n - 1];
+                        if method_seg.ident == "empty"
+                            && matches!(method_seg.arguments, PathArguments::None)
+                        {
+                            let cname = container_seg.ident.to_string();
+                            let args_ts = match &container_seg.arguments {
+                                PathArguments::AngleBracketed(ab) => {
+                                    let args = &ab.args;
+                                    Some(quote! { <#args> })
+                                }
+                                _ => None,
+                            };
+                            let lowered: Option<Expr> = match cname.as_str() {
+                                "Seq" => Some(if let Some(a) = args_ts {
+                                    verus_syn::parse_quote! {
+                                        ::std::vec::Vec::#a::new().as_slice()
+                                    }
+                                } else {
+                                    verus_syn::parse_quote! {
+                                        ::std::vec::Vec::new().as_slice()
+                                    }
+                                }),
+                                "Map" => Some(if let Some(a) = args_ts {
+                                    verus_syn::parse_quote! {
+                                        ::std::collections::HashMap::#a::new()
+                                    }
+                                } else {
+                                    verus_syn::parse_quote! {
+                                        ::std::collections::HashMap::new()
+                                    }
+                                }),
+                                "Set" => Some(if let Some(a) = args_ts {
+                                    verus_syn::parse_quote! {
+                                        ::std::collections::HashSet::#a::new()
+                                    }
+                                } else {
+                                    verus_syn::parse_quote! {
+                                        ::std::collections::HashSet::new()
+                                    }
+                                }),
+                                _ => None,
+                            };
+                            if let Some(new) = lowered {
+                                *expr = new;
+                                return;
+                            }
+                        }
+                    }
+                }
+            }
         }
 
         // 2. Rename `f(args)` to `exec_f(args)` when `f` is a known spec fn,
@@ -1998,13 +2222,51 @@ impl<'a> VisitMut for ContractRewriter<'a> {
                 return;
             }
         }
+
+        // 5. Verus-only logical operators have no plain-Rust equivalent.
+        // Lower them to ordinary boolean expressions:
+        //   `a ==> b`  →  `!(a) || (b)`
+        //   `a <== b`  →  `!(b) || (a)`
+        //   `a <==> b` →  `(a) == (b)`
+        //   `a === b`  →  `(a) == (b)`   (extensional eq lowers like ==)
+        //   `a !== b`  →  `(a) != (b)`
+        // Without these the harness emits tokens like `a <==> b` which rustc
+        // refuses to parse.
+        if let Expr::Binary(b) = expr {
+            use verus_syn::BinOp;
+            let l = (*b.left).clone();
+            let r = (*b.right).clone();
+            match &b.op {
+                BinOp::Imply(_) => {
+                    *expr = verus_syn::parse_quote! { (!(#l) || (#r)) };
+                    return;
+                }
+                BinOp::Exply(_) => {
+                    *expr = verus_syn::parse_quote! { (!(#r) || (#l)) };
+                    return;
+                }
+                BinOp::Equiv(_) | BinOp::BigEq(_) => {
+                    *expr = verus_syn::parse_quote! { ((#l) == (#r)) };
+                    return;
+                }
+                BinOp::BigNe(_) => {
+                    *expr = verus_syn::parse_quote! { ((#l) != (#r)) };
+                    return;
+                }
+                _ => {}
+            }
+        }
     }
 }
 
 impl<'a> ContractRewriter<'a> {
-    /// If `arg` is a bare user-typed ident `u` (or `*u`), replace it with
-    /// `&__pbt_to_exec_User(&u)` so it can be passed to an `exec_*` spec fn
-    /// (which takes the borrowed engine form).
+    /// If `arg` is a bare ident `u` (or `*u`) matching one of the
+    /// rewriter's known param shapes, replace it with the form expected by
+    /// the spec-fn companion:
+    ///   - User type `u: User`  → `&__pbt_to_exec_User(&u)`.
+    ///   - Owned String `s: String` → `&s` (so a spec fn taking `&str`
+    ///     receives a borrow that derefs to `&str`).
+    ///   - Owned Vec etc. → `&v` (works for any `&[T]`/`&Vec<T>` callee).
     fn convert_user_arg(&self, arg: &mut Expr) {
         // Unwrap a single deref: `*p` where `p: &User`.
         let inner: &Expr = match &*arg {
@@ -2017,6 +2279,11 @@ impl<'a> ContractRewriter<'a> {
                 *arg = verus_syn::parse_quote! {
                     &<#user_ty as ::verus_pbt_runtime::ToExecModel>::to_exec_model(&#id)
                 };
+                return;
+            }
+            if let Some(borrow_form) = self.auto_borrow_idents.get(&name) {
+                *arg = verus_syn::parse_quote! { #borrow_form };
+                return;
             }
         }
     }
@@ -2037,6 +2304,7 @@ impl<'a> ContractRewriter<'a> {
             }
             ReturnShape::OwnedUserType(_)
             | ReturnShape::OwnedOption(_)
+            | ReturnShape::OwnedResult(_, _)
             | ReturnShape::OwnedHashMap
             | ReturnShape::OwnedHashSet
             | ReturnShape::OwnedMultiset => {
@@ -2068,6 +2336,20 @@ impl<'a> ContractRewriter<'a> {
                 }
             }
             ReturnShape::Primitive | ReturnShape::Unit => {
+                verus_syn::parse_quote_spanned! { ret_ident.span() => #ret_ident }
+            }
+            ReturnShape::OwnedOrdering => {
+                // `Ordering` is a value type with `PartialEq + Eq`;
+                // contracts compare it directly to `Ordering::Less` etc.
+                verus_syn::parse_quote_spanned! { ret_ident.span() => #ret_ident }
+            }
+            ReturnShape::Tuple2(_, _) => {
+                // Tuple returns: pass `ret` through. Contracts that
+                // access `.0` / `.1` work natively; element-wise
+                // deep_view isn't yet wired up, so contracts that need
+                // `ret.0.deep_view()` (e.g. `Seq` projection of a slice
+                // element) will fail. The common 2-tuple-of-bools /
+                // 2-tuple-of-primitives case works directly.
                 verus_syn::parse_quote_spanned! { ret_ident.span() => #ret_ident }
             }
         }
@@ -2572,12 +2854,25 @@ fn return_shape_to_spec_type(shape: &ReturnShape) -> TokenStream2 {
             };
             quote! { Option<#inner> }
         }
+        ReturnShape::OwnedResult(t, e) => {
+            let tt = match t {
+                ParamElem::Primitive(t) => quote! { #t },
+                ParamElem::UserType(n) => quote! { #n },
+            };
+            let et = match e {
+                ParamElem::Primitive(t) => quote! { #t },
+                ParamElem::UserType(n) => quote! { #n },
+            };
+            quote! { Result<#tt, #et> }
+        }
         ReturnShape::OwnedHashMap => quote! { Map<_, _> },
         ReturnShape::OwnedHashSet => quote! { Set<_> },
         ReturnShape::OwnedMultiset => quote! { Multiset<_> },
         ReturnShape::OwnedUserType(n) | ReturnShape::RefUserType(n) => quote! { #n },
         ReturnShape::RefPrimitive(t) => quote! { #t },
         ReturnShape::RefStr | ReturnShape::OwnedString => quote! { Seq<char> },
+        ReturnShape::OwnedOrdering => quote! { ::core::cmp::Ordering },
+        ReturnShape::Tuple2(_, _) => quote! { (_, _) },
     }
 }
 
@@ -3488,6 +3783,7 @@ the return value to be a sample-able runtime value.",
     let mut param_call_form: HashMap<String, TokenStream2> = HashMap::new();
     let mut pre_view_for: HashMap<String, TokenStream2> = HashMap::new();
     let mut user_typed_idents: HashMap<String, Ident> = HashMap::new();
+    let mut auto_borrow_idents: HashMap<String, TokenStream2> = HashMap::new();
     for (id, shape) in param_idents.iter().zip(param_shapes.iter()) {
         param_call_form.insert(id.to_string(), shape.call_form_for_deep_view(id));
         if let Some(snap) = shape.pre_call_view_snapshot(id) {
@@ -3502,6 +3798,26 @@ the return value to be a sample-able runtime value.",
             inner_for_user_check
         {
             user_typed_idents.insert(id.to_string(), t.clone());
+        }
+        // For shapes where the harness binding is owned but spec fns
+        // typically take a borrow, register the borrow form so the
+        // contract rewriter can auto-insert it. Reach through MutRef.
+        let inner: &ParamShape = match shape {
+            ParamShape::MutRef(i) => i.as_ref(),
+            other => other,
+        };
+        match inner {
+            ParamShape::OwnedString => {
+                // `String` → `&` for `&str`-taking spec fns. The deref
+                // coercion handles `&String -> &str` automatically.
+                auto_borrow_idents.insert(id.to_string(), quote! { &#id });
+            }
+            ParamShape::OwnedVec(_) => {
+                // `Vec<T>` → `&` for `&[T]`-taking spec fns (deref
+                // coercion).
+                auto_borrow_idents.insert(id.to_string(), quote! { &#id });
+            }
+            _ => {}
         }
     }
     let _ = &self_ident;
@@ -3578,6 +3894,7 @@ the return value to be a sample-able runtime value.",
                 param_call_form: &param_call_form,
                 pre_view_for: &pre_view_for,
                 user_typed_idents: &user_typed_idents,
+                auto_borrow_idents: &auto_borrow_idents,
                 when_used_as_spec_redirect,
                 return_ident: return_ident.clone(),
                 return_shape: return_shape.clone(),
@@ -3591,6 +3908,7 @@ the return value to be a sample-able runtime value.",
                 param_call_form: &param_call_form,
                 pre_view_for: &pre_view_for,
                 user_typed_idents: &user_typed_idents,
+                auto_borrow_idents: &auto_borrow_idents,
                 when_used_as_spec_redirect,
                 return_ident: return_ident.clone(),
                 return_shape: return_shape.clone(),
@@ -3796,21 +4114,45 @@ the return value to be a sample-able runtime value.",
     };
 
     let harness_tokens = match &flavor {
-        HarnessFlavor::Regular => quote_spanned! { fn_name.span() =>
+        HarnessFlavor::Regular => {
+            // proptest!'s zero-binder shape doesn't parse — its macro
+            // requires `$($parm:pat in $strategy:expr),+` (one or more).
+            // Inject a dummy `_: ()` binder so harnesses for zero-param
+            // fns (e.g. `String::new()`) still emit a valid `proptest!`
+            // invocation. The `()` strategy is a no-op sample.
+            let strategy_decls_with_fallback: Vec<TokenStream2> =
+                if strategy_decls.is_empty() {
+                    vec![quote! {
+                        __pbt_unused in ::proptest::strategy::Just(())
+                    }]
+                } else {
+                    strategy_decls.clone()
+                };
+            quote_spanned! { fn_name.span() =>
             proptest! {
                 #![proptest_config(::proptest::test_runner::Config {
                     // Bump the global rejects ceiling so harnesses with
-                    // multi-param relational preconditions (e.g. `i <= j`) can
-                    // still complete enough successful cases. Default is 1024;
-                    // we raise it to 65536. The default success threshold
-                    // (256) is unchanged.
-                    max_global_rejects: 65536,
+                    // multi-param relational preconditions (e.g.
+                    // `mid <= slice.len()`) can still complete enough
+                    // successful cases. proptest's default is 1024;
+                    // a typical 50% reject rate at the default 256 cases
+                    // run consumes ~256 rejects, so 65536 was plenty for
+                    // the default. But when users raise PROPTEST_CASES
+                    // (e.g. to 100000), the rejects scale linearly and
+                    // 65536 runs out. We raise the engine default to
+                    // 1_000_000 so most reasonable PROPTEST_CASES values
+                    // (up to ~10000) work without env-var tuning. For
+                    // higher case counts, set
+                    // `PROPTEST_MAX_GLOBAL_REJECTS=N` (proptest applies
+                    // env vars *after* this config struct, so the env
+                    // var wins via `contextualize_config`).
+                    max_global_rejects: 1_000_000,
                     ..::proptest::test_runner::Config::default()
                 })]
 
                 #[test]
                 fn #pbt_fn_name(
-                    #(#strategy_decls),*
+                    #(#strategy_decls_with_fallback),*
                 ) {
                     // Snapshot pre-call state for `&mut`-shaped params FIRST so
                     // both `requires` and `ensures` can reference `old(<id>)`.
@@ -3821,7 +4163,7 @@ the return value to be a sample-able runtime value.",
                     #(::proptest::prop_assert!(#rewritten_ensures);)*
                 }
             }
-        },
+        }},
         HarnessFlavor::MutantRunner { runner_name, .. } => {
             // In-process mutant runner: returns `MutantOutcome::Killed` on
             // the first failed assertion, `MutantOutcome::Survived` if
@@ -3931,7 +4273,10 @@ the return value to be a sample-able runtime value.",
             quote_spanned! { fn_name.span() =>
                 proptest! {
                     #![proptest_config(::proptest::test_runner::Config {
-                        max_global_rejects: 65536,
+                        // See comment on the regular harness path for
+                        // why we set this to 1_000_000 (covers high
+                        // PROPTEST_CASES without env-var tuning).
+                        max_global_rejects: 1_000_000,
                         ..::proptest::test_runner::Config::default()
                     })]
 
@@ -4315,7 +4660,7 @@ fn emit_inline_assert_forall_harness(
             use ::proptest::strategy::Strategy;
             use ::proptest::test_runner::{Config, TestCaseError, TestRunner};
             let cfg = Config {
-                max_global_rejects: 65536,
+                max_global_rejects: 1_000_000,
                 ..Config::default()
             };
             let mut runner = TestRunner::new(cfg);

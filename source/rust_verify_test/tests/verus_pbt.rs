@@ -1046,9 +1046,11 @@ test_verify_one_file! {
 
         pub open spec fn small_spec(x: u32) -> bool { x <= 100 }
 
-        // Standalone fn that wraps the spec path.
-        #[verifier::external_body]
-        pub fn small_via(x: u32) -> (r: bool) ensures r == small_spec(x), { x <= 100 }
+        // Standalone fn that wraps the spec path (declared external so the
+        // assume_specification below can attach a contract to it without
+        // colliding).
+        #[verifier::external]
+        pub fn small_via(x: u32) -> bool { x <= 100 }
 
         #[pbt]
         pub assume_specification[ small_via ](x: u32) -> (r: bool)
@@ -1062,8 +1064,8 @@ test_verify_one_file! {
     #[test] test_verus_pbt_assume_spec_generic IMPORTS.to_string() + verus_code_str! {
         #[allow(unused_imports)] use vstd::contrib::verus_pbt::*;
 
-        #[verifier::external_body]
-        pub fn pass<T>(x: T) -> (r: T) ensures true, { x }
+        #[verifier::external]
+        pub fn pass<T>(x: T) -> T { x }
 
         #[pbt(T = u32)]
         pub assume_specification<T>[ pass::<T> ](x: T) -> (r: T)
@@ -1081,8 +1083,8 @@ test_verify_one_file! {
 
         // Stub free fn that the assume_spec proxies to. (We can't directly
         // assume_specification rust stdlib in a test, so use a local stand-in.)
-        #[verifier::external_body]
-        pub fn tz_local(i: u8) -> (r: u32) ensures always(i), { i.trailing_zeros() }
+        #[verifier::external]
+        pub fn tz_local(i: u8) -> u32 { i.trailing_zeros() }
 
         #[pbt]
         pub assume_specification[ tz_local ](i: u8) -> (r: u32)

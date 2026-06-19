@@ -1,4 +1,6 @@
 #![allow(unused_imports)]
+#[cfg(all(feature = "alloc", feature = "std"))]
+use super::contrib::exec_spec::*;
 use super::prelude::*;
 use super::seq::*;
 use super::view::*;
@@ -68,6 +70,20 @@ pub exec fn slice_index_get<T>(slice: &[T], i: usize) -> (out: &T)
     &slice[i]
 }
 
+// PBT-specific wrapper at concrete `T = u8`. See note in array.rs for why
+// these wrappers exist instead of marking generic vstd functions directly.
+#[doc(hidden)]
+#[pbt]
+#[verifier::external_body]
+pub exec fn __pbt_slice_index_get_u8(slice: &[u8], i: usize) -> (out: u8)
+    requires
+        0 <= i < slice.view().len(),
+    ensures
+        out == slice@.index(i as int),
+{
+    slice[i]
+}
+
 ////// Len (with autospec)
 #[cfg_attr(all(verus_keep_ghost), rustc_diagnostic_item = "verus::vstd::slice::spec_slice_len")]
 pub uninterp spec fn spec_slice_len<T>(slice: &[T]) -> usize;
@@ -90,6 +106,7 @@ pub open spec fn spec_slice_is_empty<T>(slice: &[T]) -> bool {
 }
 
 #[verifier::when_used_as_spec(spec_slice_is_empty)]
+#[pbt(T = u8)]
 pub assume_specification<T>[ <[T]>::is_empty ](slice: &[T]) -> (b: bool)
     ensures
         b <==> slice@.len() == 0,
@@ -104,8 +121,31 @@ pub exec fn slice_to_vec<T: Copy>(slice: &[T]) -> (out: alloc::vec::Vec<T>)
     slice.to_vec()
 }
 
+#[cfg(feature = "alloc")]
+#[doc(hidden)]
+#[pbt]
+#[verifier::external_body]
+pub exec fn __pbt_slice_to_vec_u8(slice: &[u8]) -> (out: alloc::vec::Vec<u8>)
+    ensures
+        out@ == slice@,
+{
+    slice.to_vec()
+}
+
 #[verifier::external_body]
 pub exec fn slice_subrange<T, 'a>(slice: &'a [T], i: usize, j: usize) -> (out: &'a [T])
+    requires
+        0 <= i <= j <= slice@.len(),
+    ensures
+        out@ == slice@.subrange(i as int, j as int),
+{
+    &slice[i..j]
+}
+
+#[doc(hidden)]
+#[pbt]
+#[verifier::external_body]
+pub exec fn __pbt_slice_subrange_u8<'a>(slice: &'a [u8], i: usize, j: usize) -> (out: &'a [u8])
     requires
         0 <= i <= j <= slice@.len(),
     ensures

@@ -161,7 +161,7 @@ pub(crate) fn cfg_erase() -> EraseGhost {
 }
 
 #[derive(Clone, Copy)]
-enum VstdKind {
+pub(crate) enum VstdKind {
     /// The current crate is vstd.
     IsVstd,
     /// There is no vstd (only verus_builtin). Really only used for testing.
@@ -174,7 +174,7 @@ enum VstdKind {
     ImportedViaCore,
 }
 
-fn vstd_kind() -> VstdKind {
+pub(crate) fn vstd_kind() -> VstdKind {
     static VSTD_KIND: OnceLock<VstdKind> = OnceLock::new();
     *VSTD_KIND.get_or_init(|| {
         match std::env::var("VSTD_KIND") {

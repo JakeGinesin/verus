@@ -735,6 +735,26 @@ fn strip_attr_impl_fn(f: &mut verus_syn::ImplItemFn, name: &str) {
     f.attrs.retain(|a| !attr_is(a, name));
 }
 
+/// Sentinel doc attribute the `#[pbt]` strip pass leaves behind on impl
+/// methods that were originally marked. `verus_pbt.rs::classify` reads it to
+/// decide which methods in a marker-bearing impl should be turned into
+/// harnesses. Doc attrs are inert at compile time, so this survives
+/// pass-through to rustc without affecting behavior.
+pub(crate) const VERUS_PBT_HARNESS_SENTINEL: &str = "__verus_pbt_harness_marker__";
+
+/// Replace `#[pbt]` on an impl method with the sentinel doc attribute. Used
+/// in place of `strip_attr_impl_fn(f, "pbt")` when we want classify to know
+/// which methods were originally marked.
+fn convert_pbt_to_sentinel_impl_fn(f: &mut verus_syn::ImplItemFn) {
+    let was_marked = f.attrs.iter().any(|a| attr_is(a, "pbt"));
+    f.attrs.retain(|a| !attr_is(a, "pbt"));
+    if was_marked {
+        let s = VERUS_PBT_HARNESS_SENTINEL;
+        let attr: Attribute = verus_syn::parse_quote! { #[doc = #s] };
+        f.attrs.push(attr);
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Item identity helpers
 // ---------------------------------------------------------------------------
@@ -1651,6 +1671,7 @@ fn synthesize_pbt_wrapper_from_assume_spec(
         verus_syn::punctuated::Punctuated::new();
     let mut call_args: Vec<Expr> = Vec::new();
     let mut had_self = false;
+    let mut any_param_adapted = false;
     if let Some((_, inputs)) = &asp.inputs {
         for arg in inputs.iter() {
             match &arg.kind {
@@ -1694,34 +1715,53 @@ fn synthesize_pbt_wrapper_from_assume_spec(
                     // stripping the outer reference and passing `&name` at
                     // the call site, so the harness samples the owned form
                     // and the trusted body still receives a borrow.
+                    //
+                    // `&mut Container<T>` is NOT adapted — we keep it as-is.
+                    // The harness emitter handles `&mut` by sampling the
+                    // owned form of the inner shape and passing
+                    // `&mut <id>` at the call site (see ParamShape::MutRef).
                     let mut adapted = arg.clone();
                     let mut needs_borrow = false;
                     if let FnArgKind::Typed(adapted_pt) = &mut adapted.kind {
                         if let Type::Reference(rty) = adapted_pt.ty.as_ref() {
-                            if let Type::Path(tp) = rty.elem.as_ref() {
-                                if tp.qself.is_none()
-                                    && !tp.path.segments.is_empty()
-                                {
-                                    let last = tp
-                                        .path
-                                        .segments
-                                        .last()
-                                        .unwrap()
-                                        .ident
-                                        .to_string();
-                                    if matches!(
-                                        last.as_str(),
-                                        "Vec"
-                                            | "Option"
-                                            | "Result"
-                                            | "HashMap"
-                                            | "HashSet"
-                                            | "Multiset"
-                                    ) {
-                                        // Strip the outer `&`.
-                                        let inner = (*rty.elem).clone();
-                                        adapted_pt.ty = Box::new(inner);
-                                        needs_borrow = true;
+                            // Skip `&mut` — the harness emitter handles it
+                            // via the MutRef shape.
+                            if rty.mutability.is_none() {
+                                if let Type::Path(tp) = rty.elem.as_ref() {
+                                    if tp.qself.is_none()
+                                        && !tp.path.segments.is_empty()
+                                    {
+                                        let last = tp
+                                            .path
+                                            .segments
+                                            .last()
+                                            .unwrap()
+                                            .ident
+                                            .to_string();
+                                        if matches!(
+                                            last.as_str(),
+                                            "Vec"
+                                                | "Option"
+                                                | "Result"
+                                                | "HashMap"
+                                                | "HashSet"
+                                                | "Multiset"
+                                                | "String"
+                                                // Primitive number / Copy types
+                                                // — strip outer `&` so the
+                                                // harness samples by value and
+                                                // passes `&v` at the call.
+                                                | "f32" | "f64"
+                                                | "u8" | "u16" | "u32" | "u64" | "u128" | "usize"
+                                                | "i8" | "i16" | "i32" | "i64" | "i128" | "isize"
+                                                | "bool" | "char"
+                                        ) {
+                                            // Strip the outer `&`.
+                                            let inner = (*rty.elem).clone();
+                                            adapted_pt.ty = Box::new(inner);
+                                            needs_borrow = true;
+                                            any_param_adapted = true;
+                                        }
                                     }
                                 }
                             }
@@ -1745,12 +1785,137 @@ fn synthesize_pbt_wrapper_from_assume_spec(
     }
     let _ = had_self; // currently unused but kept for clarity
 
-    let body_call: Expr = Expr::Call(ExprCall {
+    let mut body_call: Expr = Expr::Call(ExprCall {
         attrs: Vec::new(),
         func: Box::new(func_path),
         paren_token: Paren::default(),
         args: call_args.into_iter().collect(),
     });
+
+    // If we adapted any `&Container` param to its owned form, the wrapper's
+    // owned param is dropped at function exit. A `&T` return that borrows
+    // from such a param would dangle (E0515). Materialize an owned `T`
+    // instead by appending `.to_owned()` and rewriting the wrapper's
+    // output type from `&T` to the owned form. The contract was written
+    // with `res@`/`*res` semantics that work the same on the owned value
+    // because `View` impls agree (e.g. `String@ == &str@` for the same
+    // contents).
+    //
+    // The same dangle problem applies to `Option<&T>` and `Result<&T, E>`
+    // returns even when no `&Container` param was adapted — the harness
+    // pipeline's `classify_return` rejects `Option<&T>` because the
+    // nested `&T` element isn't classifiable. We rewrite ALL such returns
+    // (regardless of `any_param_adapted`) to `Option<T>` / `Result<T, E>`
+    // and append `.cloned()` / `.map(|x| x.clone())` so the harness sees
+    // an owned form.
+    let mut adjusted_output = asp.output.clone();
+    if let verus_syn::ReturnType::Type(_, _, _, ty) = &asp.output {
+        // Case 1: bare `&T` return (only adapt if a `&Container` param
+        // was stripped to owned, otherwise the original lifetime is fine).
+        if any_param_adapted {
+            if let Type::Reference(rty) = ty.as_ref() {
+                let inner = (*rty.elem).clone();
+                let inner_name: Option<String> = if let Type::Path(tp) = &inner {
+                    tp.path
+                        .segments
+                        .last()
+                        .map(|s| s.ident.to_string())
+                } else {
+                    None
+                };
+                let owned_ty: Option<Type> = match inner_name.as_deref() {
+                    // `&str` materializes as `String`; this matches the
+                    // engine's String/Seq<char> view interchangeability.
+                    Some("str") => Some(verus_syn::parse_quote! { ::std::string::String }),
+                    Some("Vec") | Some("String") | Some("Option") | Some("Result")
+                    | Some("HashMap") | Some("HashSet") => Some(inner.clone()),
+                    _ => None,
+                };
+                if let Some(owned) = owned_ty {
+                    // Replace the wrapper's output type.
+                    if let verus_syn::ReturnType::Type(arrow, tracked, ret_pat, _) =
+                        &asp.output
+                    {
+                        adjusted_output = verus_syn::ReturnType::Type(
+                            arrow.clone(),
+                            tracked.clone(),
+                            ret_pat.clone(),
+                            Box::new(owned.clone()),
+                        );
+                    }
+                    // Append `.to_owned()` to the trusted call so we
+                    // materialize an owned value before the wrapper's
+                    // owned params are dropped. `to_owned` works for `str
+                    // -> String` via `ToOwned` and for `T: Clone -> T`
+                    // via the blanket impl.
+                    body_call = verus_syn::parse_quote! { (#body_call).to_owned() };
+                }
+            }
+        }
+        // Case 2: `Option<&T>` or `Result<&T, E>` return — the inner
+        // `&T` always blocks classify_return regardless of param
+        // adaptation. Always rewrite to the owned form.
+        if let Type::Path(tp) = ty.as_ref() {
+            if tp.qself.is_none() && !tp.path.segments.is_empty() {
+                let last_seg = tp.path.segments.last().unwrap();
+                let last_name = last_seg.ident.to_string();
+                if matches!(last_name.as_str(), "Option" | "Result") {
+                    // Get the first generic arg.
+                    if let PathArguments::AngleBracketed(args) = &last_seg.arguments {
+                        if let Some(GenericArgument::Type(inner_ty)) =
+                            args.args.first()
+                        {
+                            if let Type::Reference(inner_rty) = inner_ty {
+                                let owned_inner: Type = (*inner_rty.elem).clone();
+                                // Build the new `Option<T>` / `Result<T, E>`.
+                                let mut new_path = tp.clone();
+                                let new_last = new_path
+                                    .path
+                                    .segments
+                                    .last_mut()
+                                    .unwrap();
+                                if let PathArguments::AngleBracketed(ab) =
+                                    &mut new_last.arguments
+                                {
+                                    if let Some(arg0) = ab.args.iter_mut().next() {
+                                        *arg0 =
+                                            GenericArgument::Type(owned_inner.clone());
+                                    }
+                                }
+                                let owned_outer: Type = Type::Path(new_path);
+                                if let verus_syn::ReturnType::Type(
+                                    arrow,
+                                    tracked,
+                                    ret_pat,
+                                    _,
+                                ) = &asp.output
+                                {
+                                    adjusted_output = verus_syn::ReturnType::Type(
+                                        arrow.clone(),
+                                        tracked.clone(),
+                                        ret_pat.clone(),
+                                        Box::new(owned_outer.clone()),
+                                    );
+                                }
+                                // Append `.cloned()` for Option, or
+                                // `.map(|x| x.clone())` for Result. Both
+                                // materialize the inner reference into
+                                // an owned value before the param drops.
+                                if last_name == "Option" {
+                                    body_call =
+                                        verus_syn::parse_quote! { (#body_call).cloned() };
+                                } else {
+                                    body_call = verus_syn::parse_quote! {
+                                        (#body_call).map(|__x| __x.clone())
+                                    };
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
 
     let block = Block {
         brace_token: Brace::default(),
@@ -1758,24 +1923,136 @@ fn synthesize_pbt_wrapper_from_assume_spec(
     };
 
     // Build the wrapper fn name. A unique counter wouldn't be stable across
-    // engine emissions; instead, derive from the path's last segment plus a
-    // hash of the full path so multiple wrappers don't collide.
+    // engine emissions; instead, derive from the path's last segment plus
+    // an ident-safe hash of the qself type (when present) so wrappers for
+    // different `<T as Trait>::method` instances don't collide on the
+    // last-segment name. Without this, marking both
+    // `<f32 as Clone>::clone` and `<f64 as Clone>::clone` would
+    // produce two identically-named wrappers. The same logic also
+    // disambiguates `Type::<T>::method` for different `T` in the second-
+    // to-last segment's path arguments (e.g. `Option::<u32>::is_some` vs
+    // `Option::<u64>::is_some`).
     let last_seg_name = asp
         .path
         .segments
         .last()
         .map(|s| s.ident.to_string())
         .unwrap_or_else(|| "fn".to_string());
-    let wrapper_ident = format_ident!("__pbt_assume_{}", last_seg_name);
+    fn ident_sanitize(raw: &str) -> String {
+        let mut s = String::with_capacity(raw.len());
+        for c in raw.chars() {
+            if c.is_ascii_alphanumeric() {
+                s.push(c);
+            } else if !s.ends_with('_') {
+                s.push('_');
+            }
+        }
+        s.trim_matches('_').to_string()
+    }
+    let qself_suffix: String = if let Some(qself) = &asp.qself {
+        let ty = &*qself.ty;
+        let toks = quote! { #ty };
+        ident_sanitize(&toks.to_string())
+    } else {
+        // No qself: include path-but-last to disambiguate `Foo::method` from
+        // `Bar::method` when both are marked. Also include any path
+        // arguments from each segment, sanitized, so that
+        // `Option::<u32>::is_some` and `Option::<u64>::is_some` produce
+        // distinct wrapper names.
+        let segs: Vec<String> = asp
+            .path
+            .segments
+            .iter()
+            .take(asp.path.segments.len().saturating_sub(1))
+            .map(|s| {
+                let toks = quote! { #s };
+                ident_sanitize(&toks.to_string())
+            })
+            .collect();
+        if !segs.is_empty() {
+            segs.join("_")
+        } else {
+            String::new()
+        }
+    };
+    let wrapper_ident = if qself_suffix.is_empty() {
+        format_ident!("__pbt_assume_{}", last_seg_name)
+    } else {
+        format_ident!("__pbt_assume_{}_{}", qself_suffix, last_seg_name)
+    };
 
     // Construct the SignatureSpec from the assume_spec's clauses.
+    //
+    // `returns expr` semantically means "the return value equals expr" but
+    // the harness emitter only walks `requires` / `ensures`. If the output
+    // has a named pattern (e.g. `-> (len: usize)`), translate the returns
+    // clause into an equivalent ensures clause `name == expr` so the
+    // harness can drive it. Without this conversion, `assume_specification`
+    // items written with `returns` instead of `ensures` produce no harness.
+    let mut requires = asp.requires.clone();
+    let _ = &mut requires; // suppress unused-mut warning when no transform happens
+    let mut ensures = asp.ensures.clone();
+    let mut returns = asp.returns.clone();
+    if let Some(ret_clause) = &asp.returns {
+        // Recover the named ret-pat (if any) from the output type.
+        let ret_ident: Option<Ident> = match &asp.output {
+            verus_syn::ReturnType::Type(_, _, Some(boxed), _) => {
+                fn pat_to_ident(p: &verus_syn::Pat) -> Option<Ident> {
+                    match p {
+                        verus_syn::Pat::Ident(pi) => Some(pi.ident.clone()),
+                        verus_syn::Pat::Type(pt) => pat_to_ident(&pt.pat),
+                        _ => None,
+                    }
+                }
+                pat_to_ident(&boxed.1)
+            }
+            _ => None,
+        };
+        if let Some(ret_id) = ret_ident {
+            // Translate `returns expr` into `ensures (ret_id == expr)`.
+            let ret_exprs: Vec<Expr> = ret_clause
+                .exprs
+                .exprs
+                .iter()
+                .map(|e| {
+                    let lhs: Expr = verus_syn::parse_quote! { #ret_id };
+                    let rhs = e.clone();
+                    verus_syn::parse_quote! { #lhs == #rhs }
+                })
+                .collect();
+            let new_specification = {
+                let mut p: verus_syn::punctuated::Punctuated<Expr, Token![,]> =
+                    verus_syn::punctuated::Punctuated::new();
+                for ex in ret_exprs {
+                    p.push(ex);
+                }
+                verus_syn::Specification { exprs: p }
+            };
+            let merged = match ensures {
+                Some(mut existing) => {
+                    for ex in new_specification.exprs.iter() {
+                        existing.exprs.exprs.push(ex.clone());
+                    }
+                    existing
+                }
+                None => verus_syn::Ensures {
+                    attrs: Vec::new(),
+                    token: Token![ensures](ret_clause.token.span),
+                    exprs: new_specification,
+                },
+            };
+            ensures = Some(merged);
+            // Drop the returns clause now that it's been folded into ensures.
+            returns = None;
+        }
+    }
     let spec = SignatureSpec {
         prover: None,
-        requires: asp.requires.clone(),
+        requires,
         recommends: None,
-        ensures: asp.ensures.clone(),
+        ensures,
         default_ensures: asp.default_ensures.clone(),
-        returns: asp.returns.clone(),
+        returns,
         decreases: None,
         invariants: asp.invariants.clone(),
         unwind: asp.unwind.clone(),
@@ -1799,12 +2076,30 @@ fn synthesize_pbt_wrapper_from_assume_spec(
         inputs: wrapper_inputs,
         spec,
         variadic: None,
-        output: asp.output.clone(),
+        output: adjusted_output,
     };
 
     // Carry the marker attributes through, plus stamp `#[verifier::external_body]`
     // so verification doesn't try to check the body matches the contract.
-    let mut attrs = asp.attrs.clone();
+    //
+    // Strip `#[verifier::when_used_as_spec(...)]` if present: it pairs the
+    // assume_specification with a spec fn whose generic signature we may
+    // have monomorphized via `#[pbt(T = ...)]`. Keeping it on the wrapper
+    // would surface a mismatch ("when_used_as_spec function should have the
+    // same type parameters") at verification time. The original
+    // assume_specification still carries it and continues to satisfy the
+    // verifier; the wrapper is only consumed by the harness.
+    let mut attrs: Vec<Attribute> = asp.attrs.iter().filter(|a| {
+        let p = a.path();
+        if p.leading_colon.is_some() {
+            return true;
+        }
+        let segs: Vec<String> =
+            p.segments.iter().map(|s| s.ident.to_string()).collect();
+        let segs: Vec<&str> = segs.iter().map(|s| s.as_str()).collect();
+        !matches!(segs.as_slice(), ["verifier", "when_used_as_spec"])
+            && !matches!(segs.as_slice(), ["when_used_as_spec"])
+    }).cloned().collect();
     let ext_body: Attribute = verus_syn::parse_quote! {
         #[verifier::external_body]
     };
@@ -1862,6 +2157,230 @@ fn rewrite_trait_impl_to_inherent(im: &mut verus_syn::ItemImpl) {
     }
 }
 
+/// Decide whether a Self type can host an inherent impl in the harness's
+/// scope. Returns `false` for types where rustc's orphan rule (or
+/// primitive-vs-impl rules, or unsized-vs-Sized requirements) would reject
+/// `impl <ty> { ... }`.
+///
+/// Rejects:
+///   - Primitive types (`[T; N]`, `[T]`, `str`, `u8`..`u128`, `i8`..`i128`,
+///     `usize`, `isize`, `f32`, `f64`, `bool`, `char`).
+///   - External-crate paths (anything starting with `core`, `std`, `alloc`).
+///   - Tuple, reference, pointer types.
+///
+/// Accepts: single-segment ident paths whose name isn't reserved. The
+/// caller still needs to verify the name is actually in-block; this is a
+/// fast structural check.
+fn self_ty_supports_inherent_impl(ty: &Type) -> bool {
+    match ty {
+        Type::Path(tp) => {
+            if tp.qself.is_some() {
+                return false;
+            }
+            if tp.path.leading_colon.is_some() {
+                return false;
+            }
+            if tp.path.segments.is_empty() {
+                return false;
+            }
+            // Multi-segment paths like `core::ops::Range` are external.
+            // Single-segment is what user-defined sibling types look like.
+            if tp.path.segments.len() > 1 {
+                let head = tp.path.segments[0].ident.to_string();
+                if matches!(head.as_str(), "core" | "std" | "alloc") {
+                    return false;
+                }
+                // Other multi-segment paths: conservatively treat as external.
+                return false;
+            }
+            // Single-segment: reject primitive names.
+            let name = tp.path.segments[0].ident.to_string();
+            !matches!(
+                name.as_str(),
+                "u8" | "u16"
+                    | "u32"
+                    | "u64"
+                    | "u128"
+                    | "usize"
+                    | "i8"
+                    | "i16"
+                    | "i32"
+                    | "i64"
+                    | "i128"
+                    | "isize"
+                    | "f32"
+                    | "f64"
+                    | "bool"
+                    | "char"
+                    | "str"
+                    // Standard external types where adding inherent methods
+                    // would violate the orphan rule.
+                    | "String"
+                    | "Vec"
+                    | "Option"
+                    | "Result"
+                    | "HashMap"
+                    | "HashSet"
+            )
+        }
+        // Slices, arrays, references, pointers, tuples, etc. all reject
+        // inherent impls.
+        _ => false,
+    }
+}
+
+/// Build a free-fn substitute for a method inside a trait impl. Used when
+/// the impl's Self type doesn't permit an inherent rewrite (primitive,
+/// unsized, or external). The new fn:
+///   - Takes the receiver as a regular `__pbt_self` parameter typed the
+///     same way (`&Self`, `&mut Self`, or `Self` for owned).
+///   - Inherits the impl's generics.
+///   - Has its body and contract clauses rewritten so every `self` token
+///     becomes `__pbt_self`.
+///   - Is named `<TraitPrefix>_<orig_method>` to avoid collisions when the
+///     same method name appears in multiple traits.
+fn lift_trait_method_to_free_fn(
+    impl_generics: &verus_syn::Generics,
+    self_ty: &Type,
+    trait_prefix: &str,
+    method: &verus_syn::ImplItemFn,
+) -> Option<verus_syn::ItemFn> {
+    use verus_syn::token::Paren;
+    use verus_syn::{
+        FnArg, FnArgKind, FnMode, ModeExec, Pat, PatType, Token,
+    };
+    let synth_self_name: Ident =
+        Ident::new("__pbt_self", proc_macro2::Span::call_site());
+
+    // Step 1: produce a transformed Signature with the receiver replaced by
+    // a typed `__pbt_self: <Self type>` first param. We do this by
+    // rebuilding the inputs list.
+    let mut new_sig = method.sig.clone();
+    new_sig.ident = format_ident!("{}_{}", trait_prefix, new_sig.ident);
+    let mut new_inputs: verus_syn::punctuated::Punctuated<FnArg, Token![,]> =
+        verus_syn::punctuated::Punctuated::new();
+    for arg in new_sig.inputs.iter() {
+        match &arg.kind {
+            FnArgKind::Receiver(rcv) => {
+                let recv_ty: Type = if rcv.reference.is_some() {
+                    if rcv.mutability.is_some() {
+                        verus_syn::parse_quote! { &mut #self_ty }
+                    } else {
+                        verus_syn::parse_quote! { &#self_ty }
+                    }
+                } else {
+                    self_ty.clone()
+                };
+                let pat: Pat = verus_syn::parse_quote! { #synth_self_name };
+                new_inputs.push(FnArg {
+                    kind: FnArgKind::Typed(PatType {
+                        attrs: Vec::new(),
+                        pat: Box::new(pat),
+                        colon_token: Token![:](rcv.self_token.span),
+                        ty: Box::new(recv_ty),
+                    }),
+                    tracked: None,
+                });
+            }
+            FnArgKind::Typed(_) => {
+                new_inputs.push(arg.clone());
+            }
+        }
+    }
+    new_sig.inputs = new_inputs;
+
+    // Step 2: merge impl-level generics into the fn's. Drop conflicts
+    // (impl-level params with the same name take precedence for the fn body).
+    let mut merged_generics = impl_generics.clone();
+    for p in new_sig.generics.params.iter() {
+        merged_generics.params.push(p.clone());
+    }
+    if let Some(wc) = &new_sig.generics.where_clause {
+        match &mut merged_generics.where_clause {
+            Some(existing) => {
+                for pred in wc.predicates.iter() {
+                    existing.predicates.push(pred.clone());
+                }
+            }
+            None => {
+                merged_generics.where_clause = Some(wc.clone());
+            }
+        }
+    }
+    new_sig.generics = merged_generics;
+
+    // Step 3: ensure the fn is `exec` mode.
+    new_sig.fn_token = Token![fn](proc_macro2::Span::call_site());
+    if !matches!(new_sig.mode, FnMode::Exec(..)) {
+        new_sig.mode = FnMode::Exec(ModeExec {
+            exec_token: Token![exec](proc_macro2::Span::call_site()),
+        });
+    }
+
+    // Step 4: rewrite `self` → `__pbt_self` in BOTH the signature's spec
+    // clauses (requires/ensures/returns/decreases) and the body. We do this
+    // token-wise by emitting each, running the rewrite, and re-parsing.
+    let block = &method.block;
+    let body_tokens =
+        super::exec_spec::replace_self_tokens(quote! { #block }, &synth_self_name);
+    let new_block: verus_syn::Block = match verus_syn::parse2(body_tokens) {
+        Ok(b) => b,
+        Err(_) => return None,
+    };
+
+    // Same treatment for the spec clauses. The clauses live in
+    // `new_sig.spec` as `Option<Requires>` / `Option<Ensures>` / etc. We
+    // rewrite the inner expressions in-place.
+    fn rewrite_specification_self(
+        spec: &mut verus_syn::Specification,
+        replacement: &Ident,
+    ) {
+        for e in spec.exprs.iter_mut() {
+            let toks = quote! { #e };
+            let rewritten =
+                super::exec_spec::replace_self_tokens(toks, replacement);
+            if let Ok(new_e) = verus_syn::parse2::<Expr>(rewritten) {
+                *e = new_e;
+            }
+        }
+    }
+    if let Some(req) = &mut new_sig.spec.requires {
+        rewrite_specification_self(&mut req.exprs, &synth_self_name);
+    }
+    if let Some(ens) = &mut new_sig.spec.ensures {
+        rewrite_specification_self(&mut ens.exprs, &synth_self_name);
+    }
+    if let Some(ret) = &mut new_sig.spec.returns {
+        rewrite_specification_self(&mut ret.exprs, &synth_self_name);
+    }
+
+    // Step 5: copy attrs and ensure `#[verifier::external_body]` is set.
+    let mut new_attrs = method.attrs.clone();
+    let has_external_body = new_attrs.iter().any(|a| {
+        let p = a.path();
+        p.segments.len() == 2
+            && p.segments[0].ident == "verifier"
+            && p.segments[1].ident == "external_body"
+    });
+    if !has_external_body {
+        let ext: Attribute = verus_syn::parse_quote! { #[verifier::external_body] };
+        new_attrs.push(ext);
+    }
+    // The mangled `<Trait>_<method>` ident violates snake-case lint;
+    // suppress so the lifted fn doesn't pollute the user's warning output.
+    let allow_naming: Attribute =
+        verus_syn::parse_quote! { #[allow(non_snake_case)] };
+    new_attrs.push(allow_naming);
+    let _ = Paren::default();
+    Some(verus_syn::ItemFn {
+        attrs: new_attrs,
+        vis: method.vis.clone(),
+        sig: new_sig,
+        block: Box::new(new_block),
+        semi_token: None,
+    })
+}
+
 /// Recover the receiver type for a method-shaped assume_specification path.
 /// `Vec::<T>::push` -> `Vec::<T>`. `<Vec<T> as Clone>::clone` -> `Vec<T>`
 /// (recovered from the qself).
@@ -1908,6 +2427,44 @@ the `#[pbt]` contract to use only spec fns with bodies);\n\
 /// Whole-block preprocessing for `#[pbt]` and `#[pbt_provide]`. Returns true
 /// if it rewrote `items`.
 pub(crate) fn pbt_provide_preprocess(items: &mut Vec<Item>) -> bool {
+    // The `verus_pbt_unverified!` engine path lives in
+    // `vstd::contrib::verus_pbt`, which is gated on `cfg(all(feature =
+    // "alloc", feature = "std"))`. Builds that don't have those features
+    // (e.g. `--is-core` / `--no-std` / `--no-alloc`) can't resolve the
+    // path, so any synthesis we do would emit references that fail to
+    // link. Detect those modes via `vstd_kind()` and treat all pbt
+    // markers as no-ops there: strip the markers so they don't surface
+    // as unknown attributes, then bail without folding anything.
+    let kind = crate::vstd_kind();
+    let is_no_alloc_std_build = matches!(
+        kind,
+        crate::VstdKind::NoVstd
+            | crate::VstdKind::IsCore
+            | crate::VstdKind::ImportedViaCore
+    );
+    if is_no_alloc_std_build {
+        let mut any = false;
+        for item in items.iter_mut() {
+            if item_has_attr(item, "pbt_provide") || item_has_attr(item, "pbt") {
+                strip_attr_item(item, "pbt_provide");
+                strip_attr_item(item, "pbt");
+                any = true;
+            }
+            if let Item::Impl(im) = item {
+                for ii in &mut im.items {
+                    if let ImplItem::Fn(f) = ii {
+                        if impl_fn_has_attr(f, "pbt") || impl_fn_has_attr(f, "pbt_provide") {
+                            strip_attr_impl_fn(f, "pbt");
+                            strip_attr_impl_fn(f, "pbt_provide");
+                            any = true;
+                        }
+                    }
+                }
+            }
+        }
+        return any;
+    }
+
     // Detect any markers up front.
     let mut any_marker = false;
     for item in items.iter() {
@@ -1937,17 +2494,28 @@ pub(crate) fn pbt_provide_preprocess(items: &mut Vec<Item>) -> bool {
     // (its body is a trusted call into the specified path) and the same
     // requires/ensures, so the rest of the pipeline can treat it as an
     // ordinary contract-bearing exec fn.
+    //
+    // The original `assume_specification` is preserved (with its markers
+    // stripped) so other code that depends on the contract — including
+    // verifier-side reasoning that resolves `<[T]>::is_empty` to its
+    // assumed spec — keeps working. Without this, marking an `assume_spec`
+    // would change the verifier's view of the surrounding crate.
+    let mut synthesized_wrappers: Vec<Item> = Vec::new();
     for item in items.iter_mut() {
-        if let Item::AssumeSpecification(_) = item {
-            if item_has_attr(item, "pbt") || item_has_attr(item, "pbt_provide") {
-                if let Item::AssumeSpecification(asp) = item {
-                    if let Some(synthesized) = synthesize_pbt_wrapper_from_assume_spec(asp) {
-                        *item = Item::Fn(synthesized);
-                    }
+        if let Item::AssumeSpecification(asp) = item {
+            if asp.attrs.iter().any(|a| attr_is(a, "pbt") || attr_is(a, "pbt_provide")) {
+                let asp_copy = asp.clone();
+                if let Some(synthesized) = synthesize_pbt_wrapper_from_assume_spec(&asp_copy) {
+                    synthesized_wrappers.push(Item::Fn(synthesized));
                 }
+                // Strip the markers from the original so the verifier
+                // doesn't see them as unknown attributes; the synthesized
+                // wrapper carries them and drives the harness.
+                asp.attrs.retain(|a| !attr_is(a, "pbt") && !attr_is(a, "pbt_provide"));
             }
         }
     }
+    items.extend(synthesized_wrappers);
 
     // Note: `int` / `nat` quantifier-bound variable types are handled
     // narrowly inside the harness's lifted-clause synthesis, not block-
@@ -1956,11 +2524,15 @@ pub(crate) fn pbt_provide_preprocess(items: &mut Vec<Item>) -> bool {
     // engine still rejects `int`-bound quantifiers in spec-fn bodies; users
     // should use runtime-primitive bounds (`usize`, `u32`, ...) there.
 
-    // Pre-pass: rewrite each marked trait impl `impl<T> Trait for X<T>` into
-    // an inherent-shape impl block whose method names are mangled with the
-    // trait's identifier (so multiple traits implemented for the same Self
-    // type don't collide). After this pass the engine sees only
-    // `impl X<T> { fn <Trait>_<method>(...) ... }`-style items.
+    // Pre-pass: rewrite each marked trait impl `impl<T> Trait for X<T>`.
+    //   - If the Self type supports an inherent impl (it's a sibling
+    //     user-defined struct/enum), mangle method names with the trait
+    //     prefix and drop the trait header in place. The rest of the
+    //     pipeline then handles the impl as an inherent block.
+    //   - If the Self type doesn't support an inherent impl (primitive,
+    //     unsized, external-crate type), lift each marked method into a
+    //     free fn `<TraitPrefix>_<method>` taking the receiver as a typed
+    //     param. The harness drives those as ordinary free fns.
     {
         // Compute per-index marker presence first so we don't have aliasing
         // borrows when we mutate the items in place.
@@ -1981,8 +2553,65 @@ pub(crate) fn pbt_provide_preprocess(items: &mut Vec<Item>) -> bool {
                 item_marker || method_marker
             })
             .collect();
+        // Walk indices once, deciding inherent-vs-lift per-impl.
+        // We accumulate replacement items separately and splice at the end
+        // because vec mutation while iterating is awkward.
+        let mut replacements: Vec<(usize, Vec<Item>)> = Vec::new();
+        for (i, item) in items.iter().enumerate() {
+            if !marker_at[i] {
+                continue;
+            }
+            if let Item::Impl(im) = item {
+                if im.trait_.is_some() {
+                    if self_ty_supports_inherent_impl(im.self_ty.as_ref()) {
+                        // Will rewrite in place below.
+                        continue;
+                    }
+                    // Lift each method to a free fn, AND keep the original
+                    // impl block (with markers stripped) so other vstd code
+                    // that calls these methods directly still resolves.
+                    let trait_prefix = im
+                        .trait_
+                        .as_ref()
+                        .and_then(|(_, path, _)| {
+                            path.segments
+                                .last()
+                                .map(|s| s.ident.to_string())
+                        })
+                        .unwrap_or_else(|| "_".to_string());
+                    let mut lifted: Vec<Item> = Vec::new();
+                    for ii in &im.items {
+                        if let ImplItem::Fn(f) = ii {
+                            // Only lift methods that carry the marker;
+                            // unmarked sibling methods stay where they are.
+                            if !impl_fn_has_attr(f, "pbt") && !impl_fn_has_attr(f, "pbt_provide")
+                            {
+                                continue;
+                            }
+                            if let Some(new_fn) = lift_trait_method_to_free_fn(
+                                &im.generics,
+                                im.self_ty.as_ref(),
+                                &trait_prefix,
+                                f,
+                            ) {
+                                lifted.push(Item::Fn(new_fn));
+                            }
+                            // Methods that fail to lift get dropped here;
+                            // they'll surface as missing-fn errors at the
+                            // harness layer if the user marked one.
+                        }
+                    }
+                    replacements.push((i, lifted));
+                }
+            }
+        }
+        // Apply in-place inherent rewrites for the cases we kept.
         for (i, item) in items.iter_mut().enumerate() {
             if !marker_at[i] {
+                continue;
+            }
+            // Skip if we already chose to lift this impl.
+            if replacements.iter().any(|(j, _)| *j == i) {
                 continue;
             }
             if let Item::Impl(im) = item {
@@ -1990,6 +2619,28 @@ pub(crate) fn pbt_provide_preprocess(items: &mut Vec<Item>) -> bool {
                     rewrite_trait_impl_to_inherent(im);
                 }
             }
+        }
+        // Splice replacements in (highest index first so positions don't
+        // shift under us). For each replacement: keep the ORIGINAL impl
+        // (with pbt markers stripped from its methods so they pass through
+        // as ordinary trait impl methods) and INSERT the lifted free fns
+        // immediately after.
+        replacements.sort_by(|a, b| b.0.cmp(&a.0));
+        for (i, lifted) in replacements {
+            // Strip pbt markers from the original impl's methods before
+            // it passes through to the verifier — they've been carried to
+            // the lifted free fns and shouldn't trigger another harness.
+            if let Item::Impl(im) = &mut items[i] {
+                for ii in &mut im.items {
+                    if let ImplItem::Fn(f) = ii {
+                        strip_attr_impl_fn(f, "pbt");
+                        strip_attr_impl_fn(f, "pbt_provide");
+                    }
+                }
+            }
+            // Insert lifted items right after the original impl. We splice
+            // an empty range starting at i+1 so the original is preserved.
+            items.splice(i + 1..i + 1, lifted);
         }
     }
 
@@ -2044,7 +2695,7 @@ or impl method instead.",
             if let Item::Impl(im) = item {
                 for ii in &mut im.items {
                     if let ImplItem::Fn(f) = ii {
-                        strip_attr_impl_fn(f, "pbt"); strip_attr_impl_fn(f, "pbt_cov_mutate");
+                        convert_pbt_to_sentinel_impl_fn(f); strip_attr_impl_fn(f, "pbt_cov_mutate");
                         strip_attr_impl_fn(f, "pbt_provide");
                     }
                 }
@@ -2338,7 +2989,7 @@ the instantiation locally.",
             if let Item::Impl(im) = item {
                 for ii in &mut im.items {
                     if let ImplItem::Fn(f) = ii {
-                        strip_attr_impl_fn(f, "pbt"); strip_attr_impl_fn(f, "pbt_cov_mutate");
+                        convert_pbt_to_sentinel_impl_fn(f); strip_attr_impl_fn(f, "pbt_cov_mutate");
                         strip_attr_impl_fn(f, "pbt_provide");
                     }
                 }
@@ -2450,7 +3101,7 @@ contract reaches `{name}`, and the instantiation will be inherited automatically
             if let Item::Impl(im) = item {
                 for ii in &mut im.items {
                     if let ImplItem::Fn(f) = ii {
-                        strip_attr_impl_fn(f, "pbt"); strip_attr_impl_fn(f, "pbt_cov_mutate");
+                        convert_pbt_to_sentinel_impl_fn(f); strip_attr_impl_fn(f, "pbt_cov_mutate");
                         strip_attr_impl_fn(f, "pbt_provide");
                     }
                 }
@@ -2515,7 +3166,7 @@ contract reaches `{name}`, and the instantiation will be inherited automatically
             if let Item::Impl(im) = item {
                 for ii in &mut im.items {
                     if let ImplItem::Fn(f) = ii {
-                        strip_attr_impl_fn(f, "pbt"); strip_attr_impl_fn(f, "pbt_cov_mutate");
+                        convert_pbt_to_sentinel_impl_fn(f); strip_attr_impl_fn(f, "pbt_cov_mutate");
                         strip_attr_impl_fn(f, "pbt_provide");
                     }
                 }
@@ -2554,7 +3205,7 @@ contract reaches `{name}`, and the instantiation will be inherited automatically
             if let Item::Impl(im) = &mut item {
                 for ii in &mut im.items {
                     if let ImplItem::Fn(f) = ii {
-                        strip_attr_impl_fn(f, "pbt");
+                        convert_pbt_to_sentinel_impl_fn(f);
                         strip_attr_impl_fn(f, "pbt_provide");
                         // NOTE: deliberately do NOT strip `pbt_cov_mutate`
                         // from items going to the engine. The verus_pbt
@@ -2583,7 +3234,7 @@ contract reaches `{name}`, and the instantiation will be inherited automatically
             if let Item::Impl(im) = &mut item {
                 for ii in &mut im.items {
                     if let ImplItem::Fn(f) = ii {
-                        strip_attr_impl_fn(f, "pbt"); strip_attr_impl_fn(f, "pbt_cov_mutate");
+                        convert_pbt_to_sentinel_impl_fn(f); strip_attr_impl_fn(f, "pbt_cov_mutate");
                         strip_attr_impl_fn(f, "pbt_provide");
                     }
                 }

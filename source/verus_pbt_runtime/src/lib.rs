@@ -137,6 +137,26 @@ where
     }
 }
 
+// `Result<T, E>` strategy: pick `Ok(t)` or `Err(e)` with equal weight.
+// This mirrors `proptest::option::of` but proptest doesn't ship a
+// `result::of` so we build it manually with `prop_oneof!`.
+impl<T, E> PbtStrategy for Result<T, E>
+where
+    T: PbtStrategy + Debug + 'static,
+    E: PbtStrategy + Debug + 'static,
+    <T as PbtStrategy>::Strategy: 'static,
+    <E as PbtStrategy>::Strategy: 'static,
+{
+    type Strategy = BoxedStrategy<Result<T, E>>;
+    fn pbt_strategy() -> Self::Strategy {
+        proptest::prop_oneof![
+            T::pbt_strategy().prop_map(Ok),
+            E::pbt_strategy().prop_map(Err),
+        ]
+        .boxed()
+    }
+}
+
 impl<K, V> PbtStrategy for HashMap<K, V>
 where
     K: PbtStrategy + Eq + Hash + Debug + 'static,

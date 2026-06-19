@@ -27,16 +27,16 @@ verus! {
 
     verus_pbt_verified! {
 
-        spec fn all_under(s: Seq<u32>, k: u32) -> bool {
-            forall |i: usize| 0 <= i < s.len() ==> s[i as int] <= k
-        }
+    spec fn all_under(s: Seq<u32>, k: u32) -> bool {
+        forall |i: usize| 0 <= i < s.len() ==> s[i as int] <= k
+    }
 
-        fn under_check(s: &[u32], cap: u32) -> (r: u32)
-            requires all_under(s.deep_view(), cap),
-            ensures r <= cap,
-        {
-            cap
-        }
+    fn under_check(s: &[u32], cap: u32) -> (r: u32)
+        requires all_under(s.deep_view(), cap),
+        ensures r <= cap,
+    {
+        cap
+    }
         
     }
 
