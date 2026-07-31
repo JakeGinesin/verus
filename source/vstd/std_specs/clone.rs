@@ -23,11 +23,13 @@ pub fn ex_clone_clone_from<T: Clone>(a: &mut T, b: &T)
 }
 */
 
+#[pbt(backend = "bolero")]
 pub assume_specification[ <bool as Clone>::clone ](b: &bool) -> (res: bool)
     returns
         b,
 ;
 
+#[pbt(backend = "bolero")]
 pub assume_specification[ <char as Clone>::clone ](c: &char) -> (res: char)
     returns
         c,
@@ -41,6 +43,8 @@ pub assume_specification<'b, T: core::marker::PointeeSized, 'a>[ <&'b T as Clone
         res == b,
 ;
 
+// (no #[pbt]: the quantified ensures uses an untyped binder (`forall|i|`),
+// which the engine's quantifier lowering requires to be typed)
 pub assume_specification<T: Clone, const N: usize>[ <[T; N] as Clone>::clone ](a: &[T; N]) -> (res:
     [T; N])
     ensures

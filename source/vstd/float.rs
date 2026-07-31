@@ -102,6 +102,32 @@ pub assume_specification[ <f64 as Clone>::clone ](f: &f64) -> (res: f64)
         res == f,
 ;
 
+// PBT harnesses for the float Clone specs above. Not annotated directly:
+// the spec's `res == f` is Verus/SMT *structural* equality (where NaN is a
+// single identified value, so `clone(NaN) == NaN` holds), while a directly
+// emitted harness would evaluate Rust's IEEE `==` (where `NaN != NaN`) and
+// report a false counterexample. These wrappers check the structural claim
+// faithfully: IEEE-equal, or both NaN.
+#[cfg(not(verus_verify_core))]
+#[verifier::external_body]
+#[pbt(backend = "bolero")]
+pub fn pbt_f32_clone(f: f32) -> (ret: bool)
+    ensures ret,
+{
+    let res = <f32 as Clone>::clone(&f);
+    res == f || (res.is_nan() && f.is_nan())
+}
+
+#[cfg(not(verus_verify_core))]
+#[verifier::external_body]
+#[pbt(backend = "bolero")]
+pub fn pbt_f64_clone(f: f64) -> (ret: bool)
+    ensures ret,
+{
+    let res = <f64 as Clone>::clone(&f);
+    res == f || (res.is_nan() && f.is_nan())
+}
+
 #[verifier::external_trait_specification]
 pub trait ExIeeeFloatCast<To> {
     type ExternalTraitSpecificationFor: IeeeFloatCast<To>;

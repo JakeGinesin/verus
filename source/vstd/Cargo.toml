@@ -21,18 +21,49 @@ name = "vstd"
 path = "vstd.rs"
 
 [dependencies]
-verus_builtin_macros = { version = "=0.0.0-2026-07-27-0206", path = "../builtin_macros" }
+# `contrib-hooks` turns on the upstream preprocessing seam in
+# builtin_macros, which this checkout wires to `verus_pbt_engine`
+# (see ../builtin_macros/contrib_hooks_provider.rs). It is what makes
+# `#[pbt]` annotations inside vstd fire. Verifier/vargo builds of
+# builtin_macros keep the feature off and are unaffected.
+verus_builtin_macros = { version = "=0.0.0-2026-07-27-0206", path = "../builtin_macros", features = ["contrib-hooks"] }
 verus_builtin = { version = "=0.0.0-2026-07-27-0206", path = "../builtin" }
 verus_state_machines_macros = { version = "=0.0.0-2026-07-27-0206", path = "../state_machines_macros" }
+# In-place PBT patch: vstd uses #[pbt] annotations on selected fns.
+# verus_pbt's umbrella exposes the runtime + engine paths the
+# expanded harness modules need. Pulled in as a regular dep (not
+# dev-dep) because the expanded paths fire during normal vstd
+# compilation, not just test compilation.
+verus_pbt = { path = "../../../verus-pbt/source/verus_pbt", features = ["bolero"] }
+verus_pbt_vstd_ext = { path = "../../../verus-pbt/source/vstd_ext" }
 
 [features]
-default = ["std"]
+# PBT in-place patch: `allocator` is on by default in this analysis
+# checkout so the un-gated `std_specs/vec.rs` (which is generic over
+# `A: Allocator`, a nightly API) compiles under plain `cargo test`.
+# The unstable gate it enables requires RUSTC_BOOTSTRAP=1, supplied by
+# ./.cargo/config.toml exactly like verus's own vargo builds.
+default = ["std", "allocator"]
 std = ["alloc"]
 alloc = []
 allocator = []
 strict_provenance_atomic_ptr = []
 allow_panic = [] # code is allowed to panic.
 nonzero_internals = []
+
+# Profile used by `cargo bolero test ... --engine libfuzzer/afl/...` for the
+# coverage-guided fuzzing of `#[pbt(backend = "bolero")]` harnesses.
+[profile.fuzz]
+inherits = "release"
+
+# High-throughput campaign profile for long random-engine runs
+# (`cargo test --profile pbt-intense --lib`): release optimization with
+# debug assertions and overflow checks kept ON, so arithmetic bugs in
+# contract evaluation still trap.
+[profile.pbt-intense]
+inherits = "release"
+debug-assertions = true
+overflow-checks = true
 
 
 [package.metadata.verus]
@@ -44,4 +75,17 @@ unexpected_cfgs = { level = "warn", check-cfg = [
   'cfg(verus_keep_ghost)',
   'cfg(verus_verify_core)',
   'cfg(verus_keep_ghost_body)',
+  # requires-bearing bolero PBT harnesses contain `cfg(kani)` branches
+  # (the `kani::assume` lowering); registered so `cargo test` builds
+  # don't warn about the unknown cfg.
+  'cfg(kani)',
 ] }
+
+# In-place PBT patch: vstd's standalone Cargo.toml isn't part of the
+# verus source workspace, so it doesn't inherit the workspace-level
+# `[patch.crates-io]` block. Repeat the patch here so vstd builds
+# directly via `cargo build` and the verus_pbt_engine + the rest of
+# the verus workspace share a single `verus_syn` instance.
+[patch.crates-io]
+verus_syn = { path = "../../dependencies/syn" }
+verus_prettyplease = { path = "../../dependencies/prettyplease" }

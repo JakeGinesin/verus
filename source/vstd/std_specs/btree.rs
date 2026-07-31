@@ -8,9 +8,14 @@
 //! about the behavior of `BTreeMap` and `BTreeSet` into the ambient
 //! reasoning context by broadcasting the group
 //! `vstd::std_specs::btree::group_btree_axioms`.
+// PBT in-place patch: laws_cmp / cmp / iter spec machinery stays
+// ghost-gated (same pattern as vec.rs / vecdeque.rs).
+#[cfg(verus_keep_ghost)]
 use super::super::laws_cmp::obeys_cmp;
 use super::super::prelude::*;
+#[cfg(verus_keep_ghost)]
 use super::cmp::OrdSpec;
+#[cfg(verus_keep_ghost)]
 use super::iter::IteratorSpec;
 
 use alloc::alloc::Allocator;
@@ -68,6 +73,7 @@ pub struct ExKeys<'a, Key, Value>(Keys<'a, Key, Value>);
 // a prophecy, we need a function that gives us the underlying sequence of the original keys.
 pub uninterp spec fn into_iter_keys<'a, Key, Value>(i: Keys<'a, Key, Value>) -> Seq<Key>;
 
+#[cfg(verus_keep_ghost)]
 impl<'a, K, V> super::iter::IteratorSpecImpl for Keys<'a, K, V> {
     open spec fn obeys_prophetic_iter_laws(&self) -> bool {
         true
@@ -106,6 +112,7 @@ pub struct ExValues<'a, Key, Value>(Values<'a, Key, Value>);
 // a prophecy, we need a function that gives us the underlying sequence of the original values.
 pub uninterp spec fn into_iter_values<'a, Key, Value>(i: Values<'a, Key, Value>) -> Seq<Value>;
 
+#[cfg(verus_keep_ghost)]
 impl<'a, K, V> super::iter::IteratorSpecImpl for Values<'a, K, V> {
     open spec fn obeys_prophetic_iter_laws(&self) -> bool {
         true
@@ -146,6 +153,7 @@ pub uninterp spec fn into_iter<'a, Key, Value>(i: btree_map::Iter<'a, Key, Value
     (Key, Value),
 >;
 
+#[cfg(verus_keep_ghost)]
 impl<'a, K, V> super::iter::IteratorSpecImpl for btree_map::Iter<'a, K, V> {
     open spec fn obeys_prophetic_iter_laws(&self) -> bool {
         true
@@ -380,6 +388,116 @@ pub assume_specification<Key, Value, A: Allocator + Clone>[ BTreeMap::<Key, Valu
         len == spec_btree_map_len(m),
 ;
 
+// PBT wrappers for the guarded mutator specs (`insert` / `remove` /
+// `get` / `contains_key`). Their assume_specifications are stated
+// through `obeys_cmp::<Key>()` guards and the uninterp borrowed-key
+// relations (`contains_borrowed_key` / `maps_borrowed_key_to_value` /
+// `borrowed_key_removed`), which have no exec form. For `Key = Q = u32`
+// the guards hold and the deref-key axioms pin the relations to plain
+// `Map` operations, so each wrapper below restates the composite claim
+// (assume_specification + axiom + guard) in direct `Map`-method terms
+// and checks it against the real std container.
+
+#[cfg(not(verus_verify_core))]
+#[verifier::external_body]
+#[pbt(backend = "bolero")]
+pub fn pbt_btree_map_insert(m: &mut BTreeMap<u32, u32>, k: u32, v: u32) -> (result: Option<u32>)
+    ensures
+        final(m)@ == old(m)@.insert(k, v),
+        result == (if old(m)@.contains_key(k) {
+            Some(old(m)@[k])
+        } else {
+            None::<u32>
+        }),
+{
+    BTreeMap::<u32, u32>::insert(m, k, v)
+}
+
+#[cfg(not(verus_verify_core))]
+#[verifier::external_body]
+#[pbt(backend = "bolero")]
+pub fn pbt_btree_map_remove(m: &mut BTreeMap<u32, u32>, k: u32) -> (result: Option<u32>)
+    ensures
+        final(m)@ == old(m)@.remove(k),
+        result == (if old(m)@.contains_key(k) {
+            Some(old(m)@[k])
+        } else {
+            None::<u32>
+        }),
+{
+    BTreeMap::<u32, u32>::remove(m, &k)
+}
+
+#[cfg(not(verus_verify_core))]
+#[verifier::external_body]
+#[pbt(backend = "bolero")]
+pub fn pbt_btree_map_get(m: BTreeMap<u32, u32>, k: u32) -> (result: Option<u32>)
+    ensures
+        result == (if m@.contains_key(k) {
+            Some(m@[k])
+        } else {
+            None::<u32>
+        }),
+{
+    BTreeMap::<u32, u32>::get(&m, &k).copied()
+}
+
+#[cfg(not(verus_verify_core))]
+#[verifier::external_body]
+#[pbt(backend = "bolero")]
+pub fn pbt_btree_map_contains_key(m: BTreeMap<u32, u32>, k: u32) -> (result: bool)
+    ensures
+        result == m@.contains_key(k),
+{
+    BTreeMap::<u32, u32>::contains_key(&m, &k)
+}
+
+#[cfg(not(verus_verify_core))]
+#[verifier::external_body]
+#[pbt(backend = "bolero")]
+pub fn pbt_btree_set_insert(m: &mut BTreeSet<u32>, k: u32) -> (result: bool)
+    ensures
+        final(m)@ == old(m)@.insert(k),
+        result == !old(m)@.contains(k),
+{
+    BTreeSet::<u32>::insert(m, k)
+}
+
+#[cfg(not(verus_verify_core))]
+#[verifier::external_body]
+#[pbt(backend = "bolero")]
+pub fn pbt_btree_set_remove(m: &mut BTreeSet<u32>, k: u32) -> (result: bool)
+    ensures
+        final(m)@ == old(m)@.remove(k),
+        result == old(m)@.contains(k),
+{
+    BTreeSet::<u32>::remove(m, &k)
+}
+
+#[cfg(not(verus_verify_core))]
+#[verifier::external_body]
+#[pbt(backend = "bolero")]
+pub fn pbt_btree_set_contains(m: BTreeSet<u32>, k: u32) -> (result: bool)
+    ensures
+        result == m@.contains(k),
+{
+    BTreeSet::<u32>::contains(&m, &k)
+}
+
+// PBT wrapper: `spec_btree_map_len` is uninterp; this checks the
+// composite claim with `axiom_spec_btree_map_len` (`len == m@.len()`,
+// which holds since `key_obeys_cmp_spec::<u32>()` does).
+#[cfg(not(verus_verify_core))]
+#[verifier::external_body]
+#[pbt(backend = "bolero")]
+pub fn pbt_btree_map_len(m: BTreeMap<u32, u32>) -> (len: usize)
+    ensures
+        len == m@.len(),
+{
+    BTreeMap::<u32, u32>::len(&m)
+}
+
+#[pbt(Key = u32, Value = u32, A = alloc::alloc::Global, backend = "bolero")]
 pub assume_specification<Key, Value, A: Allocator + Clone>[ BTreeMap::<Key, Value, A>::is_empty ](
     m: &BTreeMap<Key, Value, A>,
 ) -> (res: bool)
@@ -387,6 +505,7 @@ pub assume_specification<Key, Value, A: Allocator + Clone>[ BTreeMap::<Key, Valu
         res == m@.is_empty(),
 ;
 
+#[pbt(K = u32, V = u32, A = alloc::alloc::Global, backend = "bolero")]
 pub assume_specification<K: Clone, V: Clone, A: Allocator + Clone>[ <BTreeMap::<
     K,
     V,
@@ -396,11 +515,13 @@ pub assume_specification<K: Clone, V: Clone, A: Allocator + Clone>[ <BTreeMap::<
         other@ == this@,
 ;
 
+#[pbt(Key = u32, Value = u32)]
 pub assume_specification<Key, Value>[ BTreeMap::<Key, Value>::new ]() -> (m: BTreeMap<Key, Value>)
     ensures
         m@ == Map::<Key, Value>::empty(),
 ;
 
+#[pbt(K = u32, V = u32)]
 pub assume_specification<K, V>[ <BTreeMap<K, V> as core::default::Default>::default ]() -> (m:
     BTreeMap<K, V>)
     ensures
@@ -576,6 +697,7 @@ pub assume_specification<
         },
 ;
 
+#[pbt(Key = u32, Value = u32, A = alloc::alloc::Global, backend = "bolero")]
 pub assume_specification<Key, Value, A: Allocator + Clone>[ BTreeMap::<Key, Value, A>::clear ](
     m: &mut BTreeMap<Key, Value, A>,
 )
@@ -674,6 +796,7 @@ pub struct ExSetIter<'a, K: 'a>(btree_set::Iter<'a, K>);
 // a prophecy, we need a function that gives us the underlying sequence of the original keys.
 pub uninterp spec fn into_iter_btree_keys<'a, Key>(i: btree_set::Iter::<'a, Key>) -> Seq<Key>;
 
+#[cfg(verus_keep_ghost)]
 impl<'a, T> super::iter::IteratorSpecImpl for btree_set::Iter::<'a, T> {
     open spec fn obeys_prophetic_iter_laws(&self) -> bool {
         true
@@ -743,6 +866,19 @@ pub assume_specification<Key, A: Allocator + Clone>[ BTreeSet::<Key, A>::len ](
         len == spec_btree_set_len(m),
 ;
 
+// PBT wrapper: composite of the uninterp-spec'd len assume_spec above
+// and `axiom_spec_btree_set_len` (see `pbt_btree_map_len`).
+#[cfg(not(verus_verify_core))]
+#[verifier::external_body]
+#[pbt(backend = "bolero")]
+pub fn pbt_btree_set_len(m: BTreeSet<u32>) -> (len: usize)
+    ensures
+        len == m@.len(),
+{
+    BTreeSet::<u32>::len(&m)
+}
+
+#[pbt(Key = u32, A = alloc::alloc::Global, backend = "bolero")]
 pub assume_specification<Key, A: Allocator + Clone>[ BTreeSet::<Key, A>::is_empty ](
     m: &BTreeSet<Key, A>,
 ) -> (res: bool)
@@ -750,6 +886,7 @@ pub assume_specification<Key, A: Allocator + Clone>[ BTreeSet::<Key, A>::is_empt
         res == m@.is_empty(),
 ;
 
+#[pbt(K = u32, A = alloc::alloc::Global, backend = "bolero")]
 pub assume_specification<K: Clone, A: Allocator + Clone>[ <BTreeSet::<K, A> as Clone>::clone ](
     this: &BTreeSet<K, A>,
 ) -> (other: BTreeSet<K, A>)
@@ -757,11 +894,13 @@ pub assume_specification<K: Clone, A: Allocator + Clone>[ <BTreeSet::<K, A> as C
         other@ == this@,
 ;
 
+#[pbt(Key = u32)]
 pub assume_specification<Key>[ BTreeSet::<Key>::new ]() -> (m: BTreeSet<Key>)
     ensures
         m@ == Set::<Key>::empty(),
 ;
 
+#[pbt(T = u32)]
 pub assume_specification<T>[ <BTreeSet<T> as core::default::Default>::default ]() -> (m: BTreeSet<
     T,
 >)
@@ -902,6 +1041,7 @@ pub assume_specification<Key: Borrow<Q> + Ord, A: Allocator + Clone, Q: Ord + ?S
         },
 ;
 
+#[pbt(Key = u32, A = alloc::alloc::Global, backend = "bolero")]
 pub assume_specification<Key, A: Allocator + Clone>[ BTreeSet::<Key, A>::clear ](
     m: &mut BTreeSet<Key, A>,
 ) where A: Clone

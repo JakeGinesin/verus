@@ -180,3 +180,113 @@ impl_int_try_from_spec! { i32 => [u8 u16 u32 u64 u128 i8 i16 usize isize] }
 impl_int_try_from_spec! { i64 => [u8 u16 u32 u64 u128 i8 i16 i32 usize isize] }
 impl_int_try_from_spec! { i128 => [u8 u16 u32 u64 u128 i8 i16 i32 i64 usize isize] }
 impl_int_try_from_spec! { isize => [u8 u16 u32 u64 u128 i8 i16 i32 i64 i128 usize] }
+
+// ---------------------------------------------------------------------------
+// PBT harnesses for the trusted `TryFrom` integer specs.
+//
+// The `impl_int_try_from_spec!` macro above installs *assumed* specs for
+// `<$to>::try_from(<$from>)`: in-range values convert via `as`, out-of-range
+// values yield `Err`. Those are trusted axioms — if they don't match the real
+// std impl, that's unsoundness. Each wrapper below re-states the intended
+// range/truncation contract as an `ensures` and calls the real std
+// conversion; a `#[pbt(backend = "bolero")]` harness then fuzzes the input
+// (edge-biased, so `MIN`/`MAX`/`0`/boundary values are hit) and fails if the
+// real conversion violates the assumed spec.
+//
+// `#[verifier::external_body]` so the ensures is a trusted (pbt-checked) spec
+// rather than something Verus proves from the body.
+macro_rules! pbt_try_from_test {
+    ($name:ident, $from:ty => $to:ty) => {
+        verus! {
+            #[cfg(not(verus_verify_core))]
+            #[verifier::external_body]
+            #[pbt(backend = "bolero")]
+            pub fn $name(a: $from) -> (ret: Option<$to>)
+                // Full range-decision spec (enabled by engine feature A1,
+                // which lifts these cross-width `as int` comparisons and the
+                // `Option` projection into the SpecInt domain):
+                //   * in range  ⟺ Some, with the exact value preserved;
+                //   * out of range ⟺ None.
+                // Catches wrong-value truncation, false-accepts, AND
+                // false-rejects.
+                ensures
+                    (((<$to>::MIN as int) <= (a as int)) && ((a as int) <= (<$to>::MAX as int)))
+                        ==> (ret is Some && (ret->Some_0 as int) == (a as int)),
+                    !(((<$to>::MIN as int) <= (a as int)) && ((a as int) <= (<$to>::MAX as int)))
+                        ==> (ret is None),
+            {
+                // `.ok()` maps Ok(v) -> Some(v), Err(_) -> None, sidestepping
+                // the opaque TryFromIntError while preserving the ok/value
+                // observable the spec constrains.
+                <$to>::try_from(a).ok()
+            }
+        }
+    };
+}
+
+// Narrowing (same signedness).
+pbt_try_from_test!(pbt_tf_u16_u8, u16 => u8);
+pbt_try_from_test!(pbt_tf_u32_u8, u32 => u8);
+pbt_try_from_test!(pbt_tf_u32_u16, u32 => u16);
+pbt_try_from_test!(pbt_tf_u64_u32, u64 => u32);
+pbt_try_from_test!(pbt_tf_u128_u64, u128 => u64);
+pbt_try_from_test!(pbt_tf_i16_i8, i16 => i8);
+pbt_try_from_test!(pbt_tf_i32_i8, i32 => i8);
+pbt_try_from_test!(pbt_tf_i64_i32, i64 => i32);
+pbt_try_from_test!(pbt_tf_i128_i64, i128 => i64);
+
+// Sign-crossing: signed -> unsigned (negatives must be rejected).
+pbt_try_from_test!(pbt_tf_i8_u8, i8 => u8);
+pbt_try_from_test!(pbt_tf_i32_u8, i32 => u8);
+pbt_try_from_test!(pbt_tf_i32_u32, i32 => u32);
+pbt_try_from_test!(pbt_tf_i64_u64, i64 => u64);
+
+// Sign-crossing: unsigned -> signed (large positives must be rejected).
+pbt_try_from_test!(pbt_tf_u8_i8, u8 => i8);
+pbt_try_from_test!(pbt_tf_u32_i32, u32 => i32);
+pbt_try_from_test!(pbt_tf_u64_i64, u64 => i64);
+
+// Platform-dependent widths.
+pbt_try_from_test!(pbt_tf_usize_u32, usize => u32);
+pbt_try_from_test!(pbt_tf_isize_i32, isize => i32);
+pbt_try_from_test!(pbt_tf_u64_usize, u64 => usize);
+pbt_try_from_test!(pbt_tf_i64_isize, i64 => isize);
+
+
+// PBT harnesses for the trusted widening `From` integer specs
+// (`impl_from_spec!` above installs `from_spec(v) = v as $to`). Widening is
+// value-preserving, so `From::from(a)` narrowed back to `$from` must equal
+// `a`; a violation would reveal an unsound widening spec.
+macro_rules! pbt_from_test {
+    ($name:ident, $from:ty => $to:ty) => {
+        verus! {
+            #[cfg(not(verus_verify_core))]
+            #[verifier::external_body]
+            #[pbt(backend = "bolero")]
+            pub fn $name(a: $from) -> (ret: $to)
+                ensures
+                    (ret as $from) == a,
+            {
+                <$to as core::convert::From<$from>>::from(a)
+            }
+        }
+    };
+}
+
+pbt_from_test!(pbt_from_u8_u16, u8 => u16);
+pbt_from_test!(pbt_from_u8_u32, u8 => u32);
+pbt_from_test!(pbt_from_u8_u64, u8 => u64);
+pbt_from_test!(pbt_from_u8_u128, u8 => u128);
+pbt_from_test!(pbt_from_u16_u32, u16 => u32);
+pbt_from_test!(pbt_from_u16_u64, u16 => u64);
+pbt_from_test!(pbt_from_u32_u64, u32 => u64);
+pbt_from_test!(pbt_from_u32_u128, u32 => u128);
+pbt_from_test!(pbt_from_u64_u128, u64 => u128);
+pbt_from_test!(pbt_from_i8_i16, i8 => i16);
+pbt_from_test!(pbt_from_i8_i32, i8 => i32);
+pbt_from_test!(pbt_from_i8_i64, i8 => i64);
+pbt_from_test!(pbt_from_i16_i32, i16 => i32);
+pbt_from_test!(pbt_from_i16_i64, i16 => i64);
+pbt_from_test!(pbt_from_i32_i64, i32 => i64);
+pbt_from_test!(pbt_from_i32_i128, i32 => i128);
+pbt_from_test!(pbt_from_i64_i128, i64 => i128);

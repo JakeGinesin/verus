@@ -1,7 +1,15 @@
 use super::super::prelude::*;
+// PBT in-place patch: the spec-trait machinery (SliceIndexSpec /
+// IndexSpec / IteratorSpec) and the gated `range` module only exist in
+// verifier builds; the impls referencing them below are gated per-item
+// (same pattern as vec.rs / vecdeque.rs).
+#[cfg(verus_keep_ghost)]
 use super::super::slice::SliceIndexSpec;
+#[cfg(verus_keep_ghost)]
 use super::core::IndexSpec;
+#[cfg(verus_keep_ghost)]
 use super::iter::IteratorSpec;
+#[cfg(verus_keep_ghost)]
 use super::range::{slice_range_end, slice_range_start, slice_range_valid};
 
 use core::ops::{Index, IndexMut, Range};
@@ -11,6 +19,7 @@ use verus as verus_;
 
 verus_! {
 
+#[cfg(verus_keep_ghost)]
 impl<T> super::super::slice::SliceIndexSpecImpl<[T]> for usize {
     open spec fn index_req(&self, slice: &[T]) -> bool {
         *self < slice@.len()
@@ -28,6 +37,7 @@ pub assume_specification<T>[ <usize as SliceIndex<[T]>>::index_mut ](i: usize, s
         final(slice)@ == old(slice)@.update(i as int, *final(output))
 ;
 
+#[cfg(verus_keep_ghost)]
 impl<T> super::super::slice::SliceIndexSpecImpl<[T]> for Range<usize> {
     open spec fn index_req(&self, slice: &[T]) -> bool {
         &&& self.start <= self.end
@@ -47,6 +57,7 @@ pub assume_specification<T>[ <Range<usize> as SliceIndex<[T]>>::index_mut ](i: R
         forall|j: int| !(i.start <= j < i.end) ==> final(slice)@[j] == old(slice)@[j],
 ;
 
+#[cfg(verus_keep_ghost)]
 impl<T, I: SliceIndex<[T]>> super::core::IndexSpecImpl<I> for [T] {
     open spec fn index_req(&self, index: &I) -> bool {
         index.index_req(self)
@@ -69,6 +80,7 @@ pub assume_specification<T, I: SliceIndex<[T]>>[ <[T] as IndexMut<I>>::index_mut
         call_ensures(<I as SliceIndex<[T]>>::index_mut, (index, slice), output),
 ;
 
+#[cfg(verus_keep_ghost)]
 impl<T, I, const N: usize> super::core::IndexSpecImpl<I> for [T; N]
 where
     [T]: Index<I>,
@@ -112,6 +124,7 @@ pub struct ExIter<'a, T: 'a>(Iter<'a, T>);
 // a prophecy, we need a function that gives us the underlying sequence of the original slice.
 pub uninterp spec fn into_iter_elts<'a, T: 'a>(i: Iter<'a, T>) -> Seq<T>;
 
+#[cfg(verus_keep_ghost)]
 impl <'a, T: 'a> super::iter::IteratorSpecImpl for Iter<'a, T> {
     open spec fn obeys_prophetic_iter_laws(&self) -> bool {
         true
@@ -170,12 +183,14 @@ pub assume_specification<'a, T> [<&'a [T] as core::iter::IntoIterator>::into_ite
         IteratorSpec::initial_value_relation(&iter, &iter),
 ;
 
+#[pbt(T = u32, backend = "bolero")]
 pub assume_specification<T> [ <[T]>::first ](slice: &[T]) -> (res: Option<&T>)
     ensures
         slice.len() == 0 ==> res.is_none(),
         slice.len() != 0 ==> res.is_some() && res.unwrap() == slice[0]
 ;
 
+#[pbt(T = u32, backend = "bolero")]
 pub assume_specification<T> [ <[T]>::last ](slice: &[T]) -> (res: Option<&T>)
     ensures
         slice.len() == 0 ==> res.is_none(),
@@ -198,6 +213,7 @@ pub assume_specification<T> [ <[T]>::last_mut ](slice: &mut [T]) -> (res: Option
             && final(slice)@ == old(slice)@.update(old(slice).len() - 1, *final(res.unwrap()))
 ;
 
+#[pbt(T = u32, backend = "bolero")]
 pub assume_specification<T> [ <[T]>::split_at ](slice: &[T], mid: usize) -> (ret: (&[T], &[T]))
     requires
         0 <= mid <= slice.len(),

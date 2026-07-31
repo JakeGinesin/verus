@@ -21,13 +21,20 @@ synstructure = { workspace = true }
 syn = { workspace = true }
 verus_syn = { workspace = true }
 verus_prettyplease = { workspace = true }
+# PBT integration: the engine that the `contrib-hooks` provider file
+# (contrib_hooks_provider.rs, wired up by build.rs) delegates to.
+# Optional — only compiled when the `contrib-hooks` feature is enabled,
+# so stock verifier builds of this crate are unaffected. vstd's own
+# Cargo.toml enables the feature for `cargo build` / `cargo test` /
+# `cargo verus verify` runs.
+verus_pbt_engine = { path = "../../../verus-pbt/source/engine", optional = true }
 
 [package.metadata.verus]
 is-builtin-macros = true
 
 [features]
 vpanic = []
-contrib-hooks = []
+contrib-hooks = ["dep:verus_pbt_engine"]
 
 [lints]
 workspace = true

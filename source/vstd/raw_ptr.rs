@@ -1052,4 +1052,82 @@ pub fn ptr_ref2<'a, T>(ptr: *const T, Tracked(perm): Tracked<&PointsTo<T>>) -> (
     SharedReference(unsafe { &*ptr })
 }
 
+// ---------------------------------------------------------------------------
+// PBT harnesses for the tracked-permission pointer API (docs/TRACKED.md
+// phases 1–2 in verus-pbt). Each wrapper monomorphizes a permission-taking
+// fn at a concrete value type; the generated harness samples the
+// permission's view (an `Option<V>` shadow model), materializes real
+// memory via constructor replay, runs the real pointer traffic, and
+// asserts the ensures against the model with certified read-back.
+// `#[verifier::external_body]` so the wrapper contract is a trusted
+// restatement checked by PBT, not re-proved.
+// (Reconstruction of the harnesses removed from the pre-migration
+// checkout: pbt_ptr_mut_read_u32 / pbt_ptr_mut_ref_u32 /
+// pbt_ptr_mut_write_u8.)
+// ---------------------------------------------------------------------------
+
+/// `ptr_mut_read`: certified move-out read; memory becomes uninit.
+#[cfg(not(verus_verify_core))]
+#[verifier::external_body]
+#[pbt(backend = "bolero")]
+pub fn pbt_ptr_mut_read_u32(ptr: *mut u32, Tracked(perm): Tracked<&mut PointsTo<u32>>) -> (v: u32)
+    requires
+        old(perm).ptr() == ptr,
+        old(perm).is_init(),
+    ensures
+        final(perm).is_uninit(),
+        v == old(perm).value(),
+{
+    ptr_mut_read(ptr, Tracked(perm))
+}
+
+/// `ptr_mut_write`: certified write; memory becomes init with `v`.
+#[cfg(not(verus_verify_core))]
+#[verifier::external_body]
+#[pbt(backend = "bolero")]
+pub fn pbt_ptr_mut_write_u8(ptr: *mut u8, Tracked(perm): Tracked<&mut PointsTo<u8>>, v: u8)
+    requires
+        old(perm).ptr() == ptr,
+    ensures
+        final(perm).is_init(),
+        final(perm).value() == v,
+{
+    ptr_mut_write(ptr, Tracked(perm), v)
+}
+
+/// `ptr_ref`: certified shared read through a `&`-permission.
+#[cfg(not(verus_verify_core))]
+#[verifier::external_body]
+#[pbt(backend = "bolero")]
+pub fn pbt_ptr_ref_u32(ptr: *mut u32, Tracked(perm): Tracked<&PointsTo<u32>>) -> (v: u32)
+    requires
+        perm.ptr() == ptr,
+        perm.is_init(),
+    ensures
+        v == perm.value(),
+{
+    *ptr_ref(ptr, Tracked(perm))
+}
+
+/// `ptr_mut_ref`: mutable reference through a `&mut` permission, observed
+/// by value (the returned `&mut` itself is Phase-3 territory; dereferencing
+/// inside the trusted wrapper keeps the contract observable).
+#[cfg(not(verus_verify_core))]
+#[verifier::external_body]
+#[pbt(backend = "bolero")]
+pub fn pbt_ptr_mut_ref_u32(
+    ptr: *mut u32,
+    Tracked(perm): Tracked<&mut PointsTo<u32>>,
+) -> (v: u32)
+    requires
+        old(perm).ptr() == ptr,
+        old(perm).is_init(),
+    ensures
+        final(perm).is_init(),
+        v == old(perm).value(),
+        final(perm).value() == old(perm).value(),
+{
+    *ptr_mut_ref(ptr, Tracked(perm))
+}
+
 } // verus!

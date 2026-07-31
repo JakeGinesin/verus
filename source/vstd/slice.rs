@@ -46,6 +46,7 @@ pub trait SliceAdditionalExecFns<T> {
 }
 
 impl<T> SliceAdditionalExecFns<T> for [T] {
+    #[pbt(T = u8, backend = "bolero")]
     #[verifier::external_body]
     fn set(&mut self, idx: usize, t: T)
         requires
@@ -57,6 +58,7 @@ impl<T> SliceAdditionalExecFns<T> for [T] {
     }
 }
 
+#[pbt(T = u8, backend = "bolero")]
 #[verifier::external_body]
 #[cfg_attr(verus_keep_ghost, rustc_diagnostic_item = "verus::vstd::slice::slice_index_get")]
 pub exec fn slice_index_get<T>(slice: &[T], i: usize) -> (out: &T)
@@ -85,10 +87,23 @@ pub assume_specification<T>[ <[T]>::len ](slice: &[T]) -> (len: usize)
         spec_slice_len(slice),
 ;
 
+// PBT wrapper: `spec_slice_len` is uninterp; this checks the composite
+// claim with `axiom_spec_len` above (`len == slice@.len()`).
+#[cfg(not(verus_verify_core))]
+#[verifier::external_body]
+#[pbt(backend = "bolero")]
+pub fn pbt_slice_len(slice: &[u32]) -> (len: usize)
+    ensures
+        len == slice@.len(),
+{
+    <[u32]>::len(slice)
+}
+
 pub open spec fn spec_slice_is_empty<T>(slice: &[T]) -> bool {
     slice@.len() == 0
 }
 
+#[pbt(T = u64, backend = "bolero")]
 #[verifier::when_used_as_spec(spec_slice_is_empty)]
 pub assume_specification<T>[ <[T]>::is_empty ](slice: &[T]) -> (b: bool)
     ensures
@@ -96,6 +111,7 @@ pub assume_specification<T>[ <[T]>::is_empty ](slice: &[T]) -> (b: bool)
 ;
 
 #[cfg(feature = "alloc")]
+#[pbt(T = u8, backend = "bolero")]
 #[verifier::external_body]
 pub exec fn slice_to_vec<T: Copy>(slice: &[T]) -> (out: alloc::vec::Vec<T>)
     ensures
@@ -104,6 +120,7 @@ pub exec fn slice_to_vec<T: Copy>(slice: &[T]) -> (out: alloc::vec::Vec<T>)
     slice.to_vec()
 }
 
+#[pbt(T = u8, backend = "bolero")]
 #[verifier::external_body]
 pub exec fn slice_subrange<T, 'a>(slice: &'a [T], i: usize, j: usize) -> (out: &'a [T])
     requires
@@ -152,6 +169,7 @@ pub broadcast axiom fn axiom_slice_get_usize<T>(v: &[T], i: usize)
         i >= v.len() ==> spec_slice_get(v, i).is_none(),
 ;
 
+#[pbt_axiom(T = u8)]
 pub broadcast axiom fn axiom_slice_ext_equal<T>(a1: &[T], a2: &[T])
     ensures
         #[trigger] (a1 =~= a2) <==> (a1.len() == a2.len() && forall|i: int|

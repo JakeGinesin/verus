@@ -119,6 +119,7 @@ pub open spec fn is_some<T>(option: &Option<T>) -> bool {
     is_variant(option, "Some")
 }
 
+#[pbt(T = u32, backend = "bolero")]
 #[verifier::when_used_as_spec(is_some)]
 pub assume_specification<T>[ Option::<T>::is_some ](option: &Option<T>) -> (b: bool)
     ensures
@@ -132,6 +133,7 @@ pub open spec fn is_none<T>(option: &Option<T>) -> bool {
     is_variant(option, "None")
 }
 
+#[pbt(T = u32, backend = "bolero")]
 #[verifier::when_used_as_spec(is_none)]
 pub assume_specification<T>[ Option::<T>::is_none ](option: &Option<T>) -> (b: bool)
     ensures
@@ -140,6 +142,7 @@ pub assume_specification<T>[ Option::<T>::is_none ](option: &Option<T>) -> (b: b
 ;
 
 // as_ref
+#[pbt(T = u32, backend = "bolero")]
 pub assume_specification<T>[ Option::<T>::as_ref ](option: &Option<T>) -> (a: Option<&T>)
     ensures
         a is Some <==> option is Some,
@@ -156,6 +159,7 @@ pub open spec fn spec_unwrap<T>(option: Option<T>) -> T
     option->0
 }
 
+#[pbt(T = u32, backend = "bolero")]
 #[verifier::when_used_as_spec(spec_unwrap)]
 pub assume_specification<T>[ Option::<T>::unwrap ](option: Option<T>) -> (t: T)
     requires
@@ -173,6 +177,7 @@ pub open spec fn spec_unwrap_or<T>(option: Option<T>, default: T) -> T {
     }
 }
 
+#[pbt(T = u32, backend = "bolero")]
 #[verifier::when_used_as_spec(spec_unwrap_or)]
 pub assume_specification<T>[ Option::<T>::unwrap_or ](option: Option<T>, default: T) -> (t: T)
     ensures
@@ -189,6 +194,7 @@ pub open spec fn spec_expect<T>(option: Option<T>, msg: &str) -> T
     option->0
 }
 
+#[pbt(T = u32, backend = "bolero")]
 #[verifier::when_used_as_spec(spec_expect)]
 pub assume_specification<T>[ Option::<T>::expect ](option: Option<T>, msg: &str) -> (t: T)
     requires
@@ -198,6 +204,7 @@ pub assume_specification<T>[ Option::<T>::expect ](option: Option<T>, msg: &str)
 ;
 
 // take
+#[pbt(T = u32, backend = "bolero")]
 pub assume_specification<T>[ Option::<T>::take ](option: &mut Option<T>) -> (t: Option<T>)
     ensures
         t == *old(option),
@@ -251,6 +258,8 @@ pub assume_specification<T, E, F: FnOnce() -> E>[ Option::<T>::ok_or_else ](
 ;
 
 // unwrap_or_default
+// (no #[pbt]: `T::default.ensures((), res)` needs generic-fn call_ensures
+// support in the engine — see PBT.md "deferred" notes)
 pub assume_specification<T: core::default::Default>[ Option::<T>::unwrap_or_default ](
     option: Option<T>,
 ) -> (res: T)
@@ -281,6 +290,7 @@ pub assume_specification<T: Clone>[ <Option<T> as Clone>::clone ](opt: &Option<T
 ;
 
 // PartialEq and Eq
+#[cfg(verus_keep_ghost)]
 impl<T: super::cmp::PartialEqSpec> super::cmp::PartialEqSpecImpl for Option<T> {
     open spec fn obeys_eq_spec() -> bool {
         T::obeys_eq_spec()
@@ -301,7 +311,27 @@ pub assume_specification<T: PartialEq>[ <Option<T> as PartialEq>::eq ](
 ) -> bool
 ;
 
+// PBT wrapper for the bare `<Option<T> as PartialEq>::eq` spec above: its
+// contract lives in the `PartialEqSpecImpl` trait impl (gated
+// `verus_keep_ghost`), so `#[pbt]` directly on the assume_specification has
+// nothing to check. For `T = u32` the structural `eq_spec` match is exactly
+// derived `Option` equality.
+#[cfg(not(verus_verify_core))]
+#[verifier::external_body]
+#[pbt(backend = "bolero")]
+pub fn pbt_option_eq(x: Option<u32>, y: Option<u32>) -> (ret: bool)
+    ensures
+        ret == (match (x, y) {
+            (Option::<u32>::None, Option::<u32>::None) => true,
+            (Some(a), Some(b)) => a == b,
+            _ => false,
+        }),
+{
+    <Option<u32> as PartialEq>::eq(&x, &y)
+}
+
 // PartialOrd and Ord
+#[cfg(verus_keep_ghost)]
 impl<T: super::cmp::PartialOrdSpec> super::cmp::PartialOrdSpecImpl for Option<T> {
     open spec fn obeys_partial_cmp_spec() -> bool {
         T::obeys_partial_cmp_spec()
@@ -323,6 +353,7 @@ pub assume_specification<T: PartialOrd>[ <Option<T> as PartialOrd>::partial_cmp 
 ) -> Option<core::cmp::Ordering>
 ;
 
+#[cfg(verus_keep_ghost)]
 impl<T: super::cmp::OrdSpec> super::cmp::OrdSpecImpl for Option<T> {
     open spec fn obeys_cmp_spec() -> bool {
         T::obeys_cmp_spec()
@@ -344,6 +375,30 @@ pub assume_specification<T: Ord>[ <Option<T> as Ord>::cmp ](
 ) -> core::cmp::Ordering
 ;
 
+// PBT wrapper for the bare `<Option<T> as Ord>::cmp` spec above, mirroring
+// `OrdSpecImpl::cmp_spec` for `T = u32` (`None < Some(_)`, element order on
+// two `Some`s).
+#[cfg(not(verus_verify_core))]
+#[verifier::external_body]
+#[pbt(backend = "bolero")]
+pub fn pbt_option_cmp(x: Option<u32>, y: Option<u32>) -> (ret: core::cmp::Ordering)
+    ensures
+        ret == (match (x, y) {
+            (Option::<u32>::None, Option::<u32>::None) => core::cmp::Ordering::Equal,
+            (Option::<u32>::None, Some(_)) => core::cmp::Ordering::Less,
+            (Some(_), Option::<u32>::None) => core::cmp::Ordering::Greater,
+            (Some(a), Some(b)) => if a < b {
+                core::cmp::Ordering::Less
+            } else if a > b {
+                core::cmp::Ordering::Greater
+            } else {
+                core::cmp::Ordering::Equal
+            },
+        }),
+{
+    <Option<u32> as Ord>::cmp(&x, &y)
+}
+
 // ok_or
 #[verifier::inline]
 pub open spec fn spec_ok_or<T, E>(option: Option<T>, err: E) -> Result<T, E> {
@@ -353,6 +408,7 @@ pub open spec fn spec_ok_or<T, E>(option: Option<T>, err: E) -> Result<T, E> {
     }
 }
 
+#[pbt(T = u32, E = u32, backend = "bolero")]
 #[verifier::when_used_as_spec(spec_ok_or)]
 pub assume_specification<T, E>[ Option::ok_or ](option: Option<T>, err: E) -> (res: Result<T, E>)
     ensures
@@ -369,6 +425,7 @@ pub assume_specification<T>[ Option::as_mut ](option: &mut Option<T>) -> (res: O
         }),
 ;
 
+#[pbt(T = u32, backend = "bolero")]
 pub assume_specification<T>[ Option::as_slice ](option: &Option<T>) -> (res: &[T])
     ensures
         res@ == (match *option {
@@ -392,6 +449,8 @@ pub assume_specification<T>[ Option::as_mut_slice ](option: &mut Option<T>) -> (
 ;
 
 #[doc(hidden)]
+// (no #[pbt]: the `&mut T` return aliases the `&mut Option` param, so the
+// harness's final-state reads conflict at borrow check — engine limitation)
 pub assume_specification<T>[ Option::insert ](option: &mut Option<T>, value: T) -> (res: &mut T)
     ensures
         *res == value,
@@ -399,6 +458,7 @@ pub assume_specification<T>[ Option::insert ](option: &mut Option<T>, value: T) 
 ;
 
 #[doc(hidden)]
+// (no #[pbt]: same `&mut T`-return aliasing limitation as `insert`)
 pub assume_specification<T>[ Option::get_or_insert ](option: &mut Option<T>, value: T) -> (res:
     &mut T)
     ensures

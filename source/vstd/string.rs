@@ -81,6 +81,25 @@ pub broadcast proof fn is_ascii_concat(s1: &str, s2: &str, s3: &str)
 }
 
 #[cfg(not(verus_verify_core))]
+// Trusted exec twin of the `is_ascii` spec fn, mirroring its definition
+// `is_ascii(s) == is_ascii_chars(s@)` = `forall|i| s@[i] <= '\u{7f}'`. With the
+// engine's option-1 rule, this stub overrides the sibling fold of `is_ascii`
+// (whose body reaches the cross-module `is_ascii_chars` in utf8.rs that the
+// closure can't pull), so the `#[pbt]` harness below can evaluate the vstd spec
+// at runtime and compare it against the real `str::is_ascii`.
+#[cfg(not(verus_verify_core))]
+external_pbt_provide! {
+    fn is_ascii(s: &str) -> bool {
+        for c in s.chars() {
+            if c > '\u{7f}' {
+                return false;
+            }
+        }
+        true
+    }
+}
+
+#[pbt(backend = "bolero")]
 #[verifier::when_used_as_spec(is_ascii)]
 pub assume_specification[ str::is_ascii ](s: &str) -> (b: bool)
     ensures
@@ -91,18 +110,21 @@ pub assume_specification[ str::is_ascii ](s: &str) -> (b: bool)
 use crate::alloc::borrow::ToOwned;
 
 #[cfg(all(feature = "alloc", not(verus_verify_core)))]
+#[pbt(backend = "bolero")]
 pub assume_specification[ str::to_owned ](s: &str) -> (res: String)
     ensures
         s@ == res@,
 ;
 
 #[cfg(not(verus_verify_core))]
+#[pbt(backend = "bolero")]
 pub assume_specification[ str::as_bytes ](s: &str) -> (b: &[u8])
     ensures
         b@ == s.spec_bytes(),
 ;
 
 #[cfg(not(verus_verify_core))]
+#[pbt(backend = "bolero")]
 #[verifier::allow_in_spec]
 pub assume_specification[ str::len ](s: &str) -> usize
     returns
@@ -110,13 +132,51 @@ pub assume_specification[ str::len ](s: &str) -> usize
 ;
 
 #[cfg(not(verus_verify_core))]
+#[pbt(backend = "bolero")]
 #[verifier::allow_in_spec]
 pub assume_specification[ str::is_empty ](s: &str) -> bool
     returns
         s@.len() == 0,
 ;
 
+// Trusted exec twin of the cross-module (`utf8.rs`) spec fn `is_char_boundary`,
+// faithfully mirroring its recursive definition: walk UTF-8 scalars from the
+// front (1/2/3/4-byte, keyed on the leading byte per `length_of_first_codepoint`),
+// subtracting each scalar's byte-width from the offset until it hits 0 (a
+// boundary), exceeds the remaining length, or goes negative (misaligned).
+// This lets the `#[pbt]` harness compare the *real* `str::is_char_boundary`
+// against the vstd spec — the highest-bug-likelihood UTF-8 spec.
 #[cfg(not(verus_verify_core))]
+external_pbt_provide! {
+    fn is_char_boundary(bytes: Seq<u8>, index: usize) -> bool {
+        let mut start: usize = 0;
+        let mut idx: i64 = index as i64;
+        loop {
+            if idx == 0 {
+                return true;
+            }
+            let remaining: i64 = (bytes.len() - start) as i64;
+            if idx < 0 || remaining < idx {
+                return false;
+            }
+            let b = bytes[start];
+            let w: usize = if b <= 0x7f {
+                1
+            } else if 0xc0 <= b && b <= 0xdf {
+                2
+            } else if 0xe0 <= b && b <= 0xef {
+                3
+            } else {
+                4
+            };
+            start += w;
+            idx -= w as i64;
+        }
+    }
+}
+
+#[cfg(not(verus_verify_core))]
+#[pbt(backend = "bolero")]
 #[verifier::allow_in_spec]
 pub assume_specification[ str::is_char_boundary ](s: &str, index: usize) -> bool
     returns
@@ -124,6 +184,7 @@ pub assume_specification[ str::is_char_boundary ](s: &str, index: usize) -> bool
 ;
 
 #[cfg(not(verus_verify_core))]
+#[pbt(backend = "bolero")]
 pub assume_specification[ str::split_at ](s: &str, mid: usize) -> (res: (&str, &str))
     requires
         is_char_boundary(s.spec_bytes(), mid as int),
@@ -185,6 +246,7 @@ impl StrSliceExecFns for str {
     /// It is more useful to talk about the length of characters and therefore this function was added.
     /// Please note that this function counts the unicode variation selectors as characters.
     /// Warning: O(n)
+    #[pbt(backend = "bolero")]
     #[verifier::external_body]
     fn unicode_len(&self) -> (l: usize)
         ensures
@@ -194,6 +256,7 @@ impl StrSliceExecFns for str {
     }
 
     /// Warning: O(n) not O(1) due to unicode decoding needed
+    #[pbt(backend = "bolero")]
     #[verifier::external_body]
     fn get_char(&self, i: usize) -> (c: char)
         requires
@@ -217,6 +280,7 @@ impl StrSliceExecFns for str {
         &self[from..to]
     }
 
+    #[pbt(backend = "bolero")]
     #[verifier::external_body]
     fn substring_char<'a>(&'a self, from: usize, to: usize) -> (ret: &'a str)
         requires
@@ -329,6 +393,7 @@ pub open spec fn string_is_ascii(s: &String) -> bool {
 }
 
 #[cfg(all(feature = "alloc", not(verus_verify_core)))]
+#[pbt(backend = "bolero")]
 pub assume_specification<'a>[ String::as_str ](s: &'a String) -> (res: &'a str)
     ensures
         res@ == s@,
@@ -336,30 +401,35 @@ pub assume_specification<'a>[ String::as_str ](s: &'a String) -> (res: &'a str)
 
 // same as above
 #[cfg(all(feature = "alloc", not(verus_verify_core)))]
+#[pbt(backend = "bolero")]
 pub assume_specification<'a>[ <String as core::ops::Deref>::deref ](s: &'a String) -> (res: &'a str)
     ensures
         res@ == s@,
 ;
 
 #[cfg(all(feature = "alloc", not(verus_verify_core)))]
+#[pbt(backend = "bolero")]
 pub assume_specification[ <String as Clone>::clone ](s: &String) -> (res: String)
     ensures
         res == s,
 ;
 
 #[cfg(all(feature = "alloc", not(verus_verify_core)))]
+#[pbt(backend = "bolero")]
 pub assume_specification[ <String as PartialEq>::eq ](s: &String, other: &String) -> (res: bool)
     ensures
         res == (s@ == other@),
 ;
 
 #[cfg(all(feature = "alloc", not(verus_verify_core)))]
+#[pbt(backend = "bolero")]
 pub assume_specification[ String::new ]() -> (res: String)
     ensures
         res@ == Seq::<char>::empty(),
 ;
 
 #[cfg(all(feature = "alloc", not(verus_verify_core)))]
+#[pbt(backend = "bolero")]
 pub assume_specification[ <String as core::default::Default>::default ]() -> (r: String)
     ensures
         r@ == Seq::<char>::empty(),
@@ -394,6 +464,7 @@ pub trait StringExecFns: Sized {
 
 #[cfg(all(feature = "alloc", not(verus_verify_core)))]
 impl StringExecFns for String {
+    #[pbt(backend = "bolero")]
     #[verifier::external_body]
     fn from_str<'a>(s: &'a str) -> (ret: String)
         ensures
@@ -402,6 +473,7 @@ impl StringExecFns for String {
         s.to_string()
     }
 
+    #[pbt(backend = "bolero")]
     #[verifier::external_body]
     fn append<'a, 'b>(&'a mut self, other: &'b str)
         ensures
@@ -410,6 +482,7 @@ impl StringExecFns for String {
         *self += other;
     }
 
+    #[pbt(backend = "bolero")]
     #[verifier::external_body]
     fn concat<'b>(self, other: &'b str) -> (ret: String)
         ensures

@@ -1428,7 +1428,7 @@ dependencies = [
  "tabled",
  "toml",
  "verus_prettyplease",
- "verus_syn",
+ "verus_syn 0.0.0-2026-07-27-0206",
 ]
 
 [[package]]
@@ -3054,8 +3054,96 @@ dependencies = [
  "quote",
  "syn 2.0.101",
  "synstructure",
+ "verus_pbt_engine",
  "verus_prettyplease",
- "verus_syn",
+ "verus_syn 0.0.0-2026-07-27-0206",
+]
+
+[[package]]
+name = "verus_pbt_assert"
+version = "0.0.0-2026-07-27-0206"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "verus_syn 0.0.0-2026-07-27-0206 (registry+https://github.com/rust-lang/crates.io-index)",
+]
+
+[[package]]
+name = "verus_pbt_attr"
+version = "0.0.0-2026-07-27-0206"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "verus_pbt_assert",
+ "verus_pbt_exec_spec",
+ "verus_pbt_external_provide",
+ "verus_pbt_syntax",
+ "verus_syn 0.0.0-2026-07-27-0206 (registry+https://github.com/rust-lang/crates.io-index)",
+]
+
+[[package]]
+name = "verus_pbt_engine"
+version = "0.0.0-2026-07-27-0206"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "verus_pbt_attr",
+ "verus_pbt_exec_spec",
+ "verus_pbt_expand",
+ "verus_pbt_syntax",
+ "verus_syn 0.0.0-2026-07-27-0206 (registry+https://github.com/rust-lang/crates.io-index)",
+]
+
+[[package]]
+name = "verus_pbt_exec_spec"
+version = "0.0.0-2026-07-27-0206"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "verus_pbt_syntax",
+ "verus_syn 0.0.0-2026-07-27-0206 (registry+https://github.com/rust-lang/crates.io-index)",
+]
+
+[[package]]
+name = "verus_pbt_expand"
+version = "0.0.0-2026-07-27-0206"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "verus_pbt_assert",
+ "verus_pbt_attr",
+ "verus_pbt_exec_spec",
+ "verus_pbt_external_provide",
+ "verus_pbt_mutator",
+ "verus_pbt_syntax",
+ "verus_syn 0.0.0-2026-07-27-0206 (registry+https://github.com/rust-lang/crates.io-index)",
+]
+
+[[package]]
+name = "verus_pbt_external_provide"
+version = "0.0.0-2026-07-27-0206"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "verus_pbt_exec_spec",
+ "verus_syn 0.0.0-2026-07-27-0206 (registry+https://github.com/rust-lang/crates.io-index)",
+]
+
+[[package]]
+name = "verus_pbt_mutator"
+version = "0.0.0-2026-07-27-0206"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "verus_syn 0.0.0-2026-07-27-0206 (registry+https://github.com/rust-lang/crates.io-index)",
+]
+
+[[package]]
+name = "verus_pbt_syntax"
+version = "0.0.0-2026-07-27-0206"
+dependencies = [
+ "proc-macro2",
+ "quote",
 ]
 
 [[package]]
@@ -3063,7 +3151,7 @@ name = "verus_prettyplease"
 version = "0.0.0-2026-07-27-0206"
 dependencies = [
  "proc-macro2",
- "verus_syn",
+ "verus_syn 0.0.0-2026-07-27-0206",
 ]
 
 [[package]]
@@ -3073,12 +3161,23 @@ dependencies = [
  "indexmap 1.9.3",
  "proc-macro2",
  "quote",
- "verus_syn",
+ "verus_syn 0.0.0-2026-07-27-0206",
 ]
 
 [[package]]
 name = "verus_syn"
 version = "0.0.0-2026-07-27-0206"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "unicode-ident",
+]
+
+[[package]]
+name = "verus_syn"
+version = "0.0.0-2026-07-27-0206"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "fdcccb102ae806c65ae59653757ac28ecff328f996159757d17b5c735a7f7850"
 dependencies = [
  "proc-macro2",
  "quote",

@@ -13,7 +13,7 @@ verus! {
 broadcast use group_seq_lemmas;
 // Conversion between u16 and little-endian byte sequences
 
-pub closed spec fn spec_u16_to_le_bytes(x: u16) -> Seq<u8> {
+pub open spec fn spec_u16_to_le_bytes(x: u16) -> Seq<u8> {
     #[verusfmt::skip]
     seq![
         (x & 0xff) as u8,
@@ -21,7 +21,7 @@ pub closed spec fn spec_u16_to_le_bytes(x: u16) -> Seq<u8> {
     ]
 }
 
-pub closed spec fn spec_u16_from_le_bytes(s: Seq<u8>) -> u16
+pub open spec fn spec_u16_from_le_bytes(s: Seq<u8>) -> u16
     recommends
         s.len() == 2,
 {
@@ -75,6 +75,7 @@ pub proof fn lemma_auto_spec_u16_to_from_le_bytes()
     }
 }
 
+#[pbt(backend = "bolero")]
 #[verifier::external_body]
 pub exec fn u16_from_le_bytes(s: &[u8]) -> (x: u16)
     requires
@@ -87,6 +88,7 @@ pub exec fn u16_from_le_bytes(s: &[u8]) -> (x: u16)
 }
 
 #[cfg(feature = "alloc")]
+#[pbt(backend = "bolero")]
 #[verifier::external_body]
 pub exec fn u16_to_le_bytes(x: u16) -> (s: alloc::vec::Vec<u8>)
     ensures
@@ -97,7 +99,7 @@ pub exec fn u16_to_le_bytes(x: u16) -> (s: alloc::vec::Vec<u8>)
 }
 
 // Conversion between u32 and little-endian byte sequences
-pub closed spec fn spec_u32_to_le_bytes(x: u32) -> Seq<u8> {
+pub open spec fn spec_u32_to_le_bytes(x: u32) -> Seq<u8> {
     #[verusfmt::skip]
     seq![
         (x & 0xff) as u8,
@@ -107,7 +109,7 @@ pub closed spec fn spec_u32_to_le_bytes(x: u32) -> Seq<u8> {
     ]
 }
 
-pub closed spec fn spec_u32_from_le_bytes(s: Seq<u8>) -> u32
+pub open spec fn spec_u32_from_le_bytes(s: Seq<u8>) -> u32
     recommends
         s.len() == 4,
 {
@@ -170,6 +172,7 @@ pub proof fn lemma_auto_spec_u32_to_from_le_bytes()
     }
 }
 
+#[pbt(backend = "bolero")]
 #[verifier::external_body]
 pub exec fn u32_from_le_bytes(s: &[u8]) -> (x: u32)
     requires
@@ -182,6 +185,7 @@ pub exec fn u32_from_le_bytes(s: &[u8]) -> (x: u32)
 }
 
 #[cfg(feature = "alloc")]
+#[pbt(backend = "bolero")]
 #[verifier::external_body]
 pub exec fn u32_to_le_bytes(x: u32) -> (s: alloc::vec::Vec<u8>)
     ensures
@@ -192,7 +196,7 @@ pub exec fn u32_to_le_bytes(x: u32) -> (s: alloc::vec::Vec<u8>)
 }
 
 // Conversion between u64 and little-endian byte sequences
-pub closed spec fn spec_u64_to_le_bytes(x: u64) -> Seq<u8> {
+pub open spec fn spec_u64_to_le_bytes(x: u64) -> Seq<u8> {
     #[verusfmt::skip]
     seq![
         (x & 0xff) as u8,
@@ -227,7 +231,7 @@ pub open spec fn spec_u64_to_le_bytes_open(x: u64) -> Seq<u8> {
     ]
 }
 
-pub closed spec fn spec_u64_from_le_bytes(s: Seq<u8>) -> u64
+pub open spec fn spec_u64_from_le_bytes(s: Seq<u8>) -> u64
     recommends
         s.len() == 8,
 {
@@ -327,6 +331,7 @@ pub proof fn spec_u64_to_le_bytes_to_open(x: u64)
 {
 }
 
+#[pbt(backend = "bolero")]
 #[verifier::external_body]
 pub exec fn u64_from_le_bytes(s: &[u8]) -> (x: u64)
     requires
@@ -339,6 +344,7 @@ pub exec fn u64_from_le_bytes(s: &[u8]) -> (x: u64)
 }
 
 #[cfg(feature = "alloc")]
+#[pbt(backend = "bolero")]
 #[verifier::external_body]
 pub exec fn u64_to_le_bytes(x: u64) -> (s: alloc::vec::Vec<u8>)
     ensures
@@ -349,7 +355,7 @@ pub exec fn u64_to_le_bytes(x: u64) -> (s: alloc::vec::Vec<u8>)
 }
 
 // Conversion between u128 and little-endian byte sequences
-pub closed spec fn spec_u128_to_le_bytes(x: u128) -> Seq<u8> {
+pub open spec fn spec_u128_to_le_bytes(x: u128) -> Seq<u8> {
     #[verusfmt::skip]
     seq![
         (x & 0xff) as u8,
@@ -371,7 +377,7 @@ pub closed spec fn spec_u128_to_le_bytes(x: u128) -> Seq<u8> {
     ]
 }
 
-pub closed spec fn spec_u128_from_le_bytes(s: Seq<u8>) -> u128
+pub open spec fn spec_u128_from_le_bytes(s: Seq<u8>) -> u128
     recommends
         s.len() == 16,
 {
@@ -514,6 +520,7 @@ pub proof fn lemma_auto_spec_u128_to_from_le_bytes()
     }
 }
 
+#[pbt(backend = "bolero")]
 #[verifier::external_body]
 pub exec fn u128_from_le_bytes(s: &[u8]) -> (x: u128)
     requires
@@ -526,6 +533,7 @@ pub exec fn u128_from_le_bytes(s: &[u8]) -> (x: u128)
 }
 
 #[cfg(feature = "alloc")]
+#[pbt(backend = "bolero")]
 #[verifier::external_body]
 pub exec fn u128_to_le_bytes(x: u128) -> (s: alloc::vec::Vec<u8>)
     ensures

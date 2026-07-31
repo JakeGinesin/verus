@@ -23,6 +23,9 @@
 //! reasoning context by broadcasting the group
 //! `vstd::std_specs::hash::group_hash_axioms`.
 use super::super::prelude::*;
+// PBT in-place patch: iter spec-trait machinery stays ghost-gated
+// (same pattern as vec.rs / vecdeque.rs / btree.rs).
+#[cfg(verus_keep_ghost)]
 use super::iter::IteratorSpec;
 
 use core::alloc::Allocator;
@@ -282,6 +285,7 @@ pub struct ExKeys<'a, Key: 'a, Value: 'a>(Keys<'a, Key, Value>);
 // a prophecy, we need a function that gives us the underlying sequence of the original keys.
 pub uninterp spec fn into_iter_keys<'a, Key, Value>(i: Keys<'a, Key, Value>) -> Seq<Key>;
 
+#[cfg(verus_keep_ghost)]
 impl<'a, K, V> super::iter::IteratorSpecImpl for Keys<'a, K, V> {
     open spec fn obeys_prophetic_iter_laws(&self) -> bool {
         true
@@ -320,6 +324,7 @@ pub struct ExValues<'a, Key: 'a, Value: 'a>(Values<'a, Key, Value>);
 // a prophecy, we need a function that gives us the underlying sequence of the original values.
 pub uninterp spec fn into_iter_values<'a, Key, Value>(i: Values<'a, Key, Value>) -> Seq<Value>;
 
+#[cfg(verus_keep_ghost)]
 impl<'a, K, V> super::iter::IteratorSpecImpl for Values<'a, K, V> {
     open spec fn obeys_prophetic_iter_laws(&self) -> bool {
         true
@@ -360,6 +365,7 @@ pub uninterp spec fn into_iter<'a, Key, Value>(i: hash_map::Iter<'a, Key, Value>
     (Key, Value),
 >;
 
+#[cfg(verus_keep_ghost)]
 impl<'a, K, V> super::iter::IteratorSpecImpl for hash_map::Iter<'a, K, V> {
     open spec fn obeys_prophetic_iter_laws(&self) -> bool {
         true
@@ -602,6 +608,169 @@ pub assume_specification<Key, Value, S, A: Allocator>[ HashMap::<Key, Value, S, 
         len == spec_hash_map_len(m),
 ;
 
+// PBT wrappers for the guarded mutator specs (`insert` / `remove` /
+// `get` / `contains_key`). Their assume_specifications are stated
+// through `obeys_key_model::<Key>()` guards and the uninterp
+// borrowed-key relations, which have no exec form. For `Key = Q = u32`
+// the guard holds and the deref-key axioms pin the relations to plain
+// `Map`/`Set` operations, so each wrapper restates the composite claim
+// in direct terms and checks it against the real std container (same
+// pattern as std_specs/btree.rs).
+
+#[cfg(not(verus_verify_core))]
+#[verifier::external_body]
+#[pbt(backend = "bolero")]
+pub fn pbt_hash_map_insert(m: &mut HashMap<u32, u32>, k: u32, v: u32) -> (result: Option<u32>)
+    ensures
+        final(m)@ == old(m)@.insert(k, v),
+        result == (if old(m)@.contains_key(k) {
+            Some(old(m)@[k])
+        } else {
+            None::<u32>
+        }),
+{
+    HashMap::<u32, u32>::insert(m, k, v)
+}
+
+#[cfg(not(verus_verify_core))]
+#[verifier::external_body]
+#[pbt(backend = "bolero")]
+pub fn pbt_hash_map_remove(m: &mut HashMap<u32, u32>, k: u32) -> (result: Option<u32>)
+    ensures
+        final(m)@ == old(m)@.remove(k),
+        result == (if old(m)@.contains_key(k) {
+            Some(old(m)@[k])
+        } else {
+            None::<u32>
+        }),
+{
+    HashMap::<u32, u32>::remove(m, &k)
+}
+
+#[cfg(not(verus_verify_core))]
+#[verifier::external_body]
+#[pbt(backend = "bolero")]
+pub fn pbt_hash_map_get(m: HashMap<u32, u32>, k: u32) -> (result: Option<u32>)
+    ensures
+        result == (if m@.contains_key(k) {
+            Some(m@[k])
+        } else {
+            None::<u32>
+        }),
+{
+    HashMap::<u32, u32>::get(&m, &k).copied()
+}
+
+#[cfg(not(verus_verify_core))]
+#[verifier::external_body]
+#[pbt(backend = "bolero")]
+pub fn pbt_hash_map_contains_key(m: HashMap<u32, u32>, k: u32) -> (result: bool)
+    ensures
+        result == m@.contains_key(k),
+{
+    HashMap::<u32, u32>::contains_key(&m, &k)
+}
+
+#[cfg(not(verus_verify_core))]
+#[verifier::external_body]
+#[pbt(backend = "bolero")]
+pub fn pbt_hash_set_insert(m: &mut HashSet<u32>, k: u32) -> (result: bool)
+    ensures
+        final(m)@ == old(m)@.insert(k),
+        result == !old(m)@.contains(k),
+{
+    HashSet::<u32>::insert(m, k)
+}
+
+#[cfg(not(verus_verify_core))]
+#[verifier::external_body]
+#[pbt(backend = "bolero")]
+pub fn pbt_hash_set_remove(m: &mut HashSet<u32>, k: u32) -> (result: bool)
+    ensures
+        final(m)@ == old(m)@.remove(k),
+        result == old(m)@.contains(k),
+{
+    HashSet::<u32>::remove(m, &k)
+}
+
+#[cfg(not(verus_verify_core))]
+#[verifier::external_body]
+#[pbt(backend = "bolero")]
+pub fn pbt_hash_set_contains(m: HashSet<u32>, k: u32) -> (result: bool)
+    ensures
+        result == m@.contains(k),
+{
+    HashSet::<u32>::contains(&m, &k)
+}
+
+// Composite PBT wrappers for the Entry API (`entry`, `Entry::key`,
+// `Entry::or_insert`, and the Occupied/Vacant machinery behind them).
+// The intermediary Entry objects carry prophetic `final_value()` state
+// that can't be sampled directly, so each wrapper checks a whole
+// entry-flow end to end: the composed trusted claims of `entry()` plus
+// the consuming entry method, projected onto the observable value and
+// the map's post-state (at `Key = Value = u32`, where the
+// `obeys_key_model` / `builds_valid_hashers` guards hold).
+
+/// `m.entry(k).or_insert(v)`, observed by value: returns the existing
+/// value or `v`, and the map afterwards holds exactly that value at `k`.
+#[cfg(not(verus_verify_core))]
+#[verifier::external_body]
+#[pbt(backend = "bolero")]
+pub fn pbt_hash_map_entry_or_insert(m: &mut HashMap<u32, u32>, k: u32, v: u32) -> (ret: u32)
+    ensures
+        ret == (if old(m)@.contains_key(k) {
+            old(m)@[k]
+        } else {
+            v
+        }),
+        final(m)@ == old(m)@.insert(k, ret),
+{
+    *m.entry(k).or_insert(v)
+}
+
+/// `*m.entry(k).or_insert(v) = v2`: prophecy resolution through the
+/// returned `&mut` — the map's post-state must reflect the write.
+#[cfg(not(verus_verify_core))]
+#[verifier::external_body]
+#[pbt(backend = "bolero")]
+pub fn pbt_hash_map_entry_or_insert_write(m: &mut HashMap<u32, u32>, k: u32, v: u32, v2: u32)
+    ensures
+        final(m)@ == old(m)@.insert(k, v2),
+{
+    let slot = m.entry(k).or_insert(v);
+    *slot = v2;
+}
+
+/// `m.entry(k).key()`, then drop the entry: the key round-trips and a
+/// read-only entry flow leaves the map unchanged (a vacant entry's
+/// `final_value()` is `None` → `remove` of an absent key; an occupied
+/// entry's is `Some(unchanged)` → identity `insert`).
+#[cfg(not(verus_verify_core))]
+#[verifier::external_body]
+#[pbt(backend = "bolero")]
+pub fn pbt_hash_map_entry_key(m: &mut HashMap<u32, u32>, k: u32) -> (ret: u32)
+    ensures
+        ret == k,
+        final(m)@ == old(m)@,
+{
+    *m.entry(k).key()
+}
+
+// PBT wrapper: `spec_hash_map_len` is uninterp, so the assume_spec above
+// has nothing evaluable. This checks the composite claim (the spec
+// together with `axiom_spec_hash_map_len`): `len == m@.len()`.
+#[cfg(not(verus_verify_core))]
+#[verifier::external_body]
+#[pbt(backend = "bolero")]
+pub fn pbt_hash_map_len(m: HashMap<u32, u32>) -> (len: usize)
+    ensures
+        len == m@.len(),
+{
+    HashMap::<u32, u32>::len(&m)
+}
+
+#[pbt(Key = u32, Value = u32, S = RandomState, A = alloc::alloc::Global, backend = "bolero")]
 pub assume_specification<Key, Value, S, A: Allocator>[ HashMap::<Key, Value, S, A>::is_empty ](
     m: &HashMap<Key, Value, S, A>,
 ) -> (res: bool)
@@ -609,6 +778,8 @@ pub assume_specification<Key, Value, S, A: Allocator>[ HashMap::<Key, Value, S, 
         res == m@.is_empty(),
 ;
 
+// (no #[pbt]: the quantified ensures references `cloned`, a spec fn
+// defined in pervasive.rs — outside this `verus!` block)
 pub assume_specification<K: Clone, V: Clone, S: Clone, A: Allocator + Clone>[ <HashMap::<
     K,
     V,
@@ -622,6 +793,7 @@ pub assume_specification<K: Clone, V: Clone, S: Clone, A: Allocator + Clone>[ <H
             other@.dom().contains(key) ==> cloned(this@[key], #[trigger] other@[key]),
 ;
 
+#[pbt(Key = u32, Value = u32)]
 pub assume_specification<Key, Value>[ HashMap::<Key, Value>::new ]() -> (m: HashMap<
     Key,
     Value,
@@ -631,6 +803,7 @@ pub assume_specification<Key, Value>[ HashMap::<Key, Value>::new ]() -> (m: Hash
         m@ == Map::<Key, Value>::empty(),
 ;
 
+#[pbt(K = u32, V = u32, S = RandomState)]
 pub assume_specification<K, V, S: core::default::Default>[ <HashMap<
     K,
     V,
@@ -845,6 +1018,7 @@ pub assume_specification<
         },
 ;
 
+#[pbt(Key = u32, Value = u32, S = RandomState, A = alloc::alloc::Global, backend = "bolero")]
 pub assume_specification<Key, Value, S, A: Allocator>[ HashMap::<Key, Value, S, A>::clear ](
     m: &mut HashMap<Key, Value, S, A>,
 )
@@ -935,6 +1109,7 @@ pub struct ExSetIter<'a, Key: 'a>(hash_set::Iter<'a, Key>);
 // a prophecy, we need a function that gives us the underlying sequence of the original keys.
 pub uninterp spec fn into_iter_hash_keys<'a, Key>(i: hash_set::Iter::<'a, Key>) -> Seq<Key>;
 
+#[cfg(verus_keep_ghost)]
 impl<'a, K> super::iter::IteratorSpecImpl for hash_set::Iter::<'a, K> {
     open spec fn obeys_prophetic_iter_laws(&self) -> bool {
         true
@@ -997,6 +1172,19 @@ pub assume_specification<Key, S, A: Allocator>[ HashSet::<Key, S, A>::len ](
         len == spec_hash_set_len(m),
 ;
 
+// PBT wrapper: composite of the uninterp-spec'd len assume_spec above and
+// `axiom_spec_hash_set_len` (see `pbt_hash_map_len`).
+#[cfg(not(verus_verify_core))]
+#[verifier::external_body]
+#[pbt(backend = "bolero")]
+pub fn pbt_hash_set_len(m: HashSet<u32>) -> (len: usize)
+    ensures
+        len == m@.len(),
+{
+    HashSet::<u32>::len(&m)
+}
+
+#[pbt(Key = u32, S = RandomState, A = alloc::alloc::Global, backend = "bolero")]
 pub assume_specification<Key, S, A: Allocator>[ HashSet::<Key, S, A>::is_empty ](
     m: &HashSet<Key, S, A>,
 ) -> (res: bool)
@@ -1004,11 +1192,13 @@ pub assume_specification<Key, S, A: Allocator>[ HashSet::<Key, S, A>::is_empty ]
         res == m@.is_empty(),
 ;
 
+#[pbt(Key = u32)]
 pub assume_specification<Key>[ HashSet::<Key>::new ]() -> (m: HashSet<Key, RandomState>)
     ensures
         m@ == Set::<Key>::empty(),
 ;
 
+#[pbt(T = u32, S = RandomState)]
 pub assume_specification<T, S: core::default::Default>[ <HashSet<
     T,
     S,

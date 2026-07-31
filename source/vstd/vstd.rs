@@ -15,10 +15,17 @@
 #![cfg_attr(any(verus_keep_ghost, feature = "allocator"), feature(allocator_api))]
 #![cfg_attr(verus_keep_ghost, feature(step_trait))]
 #![cfg_attr(verus_keep_ghost, feature(ptr_metadata))]
-#![cfg_attr(verus_keep_ghost, feature(sized_hierarchy))]
+// PBT in-place patch: `sized_hierarchy` (PointeeSized) is enabled
+// unconditionally so the un-gated std_specs/{cmp,clone}.rs compile under
+// plain `cargo test` (RUSTC_BOOTSTRAP=1 permits the gate; see
+// ./.cargo/config.toml).
+#![feature(sized_hierarchy)]
 #![cfg_attr(verus_keep_ghost, feature(freeze))]
+// PBT in-place patch: needed by the un-gated std_specs/cmp.rs
+// (`AssertParamIsEq`); unconditional for the same reason as
+// `sized_hierarchy` above.
 #![cfg_attr(verus_keep_ghost, feature(derive_clone_copy_internals))]
-#![cfg_attr(verus_keep_ghost, feature(derive_eq_internals))]
+#![feature(derive_eq_internals)]
 #![cfg_attr(verus_keep_ghost, feature(slice_index_methods))]
 #![cfg_attr(all(feature = "alloc", verus_keep_ghost), feature(liballoc_internals))]
 #![cfg_attr(verus_keep_ghost, feature(nonzero_internals))]
@@ -86,7 +93,13 @@ pub mod utf8;
 pub mod view;
 pub mod wrapping;
 
-#[cfg(verus_keep_ghost)]
+// PBT in-place patch: std_specs is normally only compiled when the
+// verus verifier sets `--cfg verus_keep_ghost`. Un-gate it here so
+// `cargo build` / `cargo test` also pull it in, which is required
+// for `#[pbt]` annotations on `assume_specification` items inside
+// std_specs/*.rs to fire. Individual submodules that depend on
+// nightly-only traits (PointeeSized, Freeze, etc) remain gated on
+// `verus_keep_ghost` from inside `std_specs/mod.rs`.
 pub mod std_specs;
 
 // Re-exports all vstd types, traits, and functions that are commonly used or replace

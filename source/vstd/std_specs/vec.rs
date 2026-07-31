@@ -1,8 +1,14 @@
 use super::super::prelude::*;
+// PBT in-place patch: the iter/core spec-trait machinery stays gated on
+// `verus_keep_ghost` (std_specs::iter / std_specs::core are ghost-only
+// modules); the impls below that reference it are gated per-item.
+#[cfg(verus_keep_ghost)]
 use super::iter::{FromIteratorSpecImpl, IteratorSpec};
 use verus_builtin::*;
 
+#[cfg(verus_keep_ghost)]
 use super::super::slice::SliceIndexSpec;
+#[cfg(verus_keep_ghost)]
 use super::core::IndexSpec;
 use alloc::collections::TryReserveError;
 use alloc::vec::{IntoIter, Vec};
@@ -89,6 +95,10 @@ pub broadcast proof fn axiom_spec_len<T, A: Allocator>(v: &Vec<T, A>)
     admit();
 }
 
+// (no #[pbt] on the assume_specification: `spec_vec_len` is uninterp, so
+// the engine has nothing to evaluate. The wrapper below checks the
+// composite claim `len == vec@.len()`, i.e. the assume_specification
+// together with `axiom_spec_len`.)
 #[verifier::when_used_as_spec(spec_vec_len)]
 pub assume_specification<T, A: Allocator>[ Vec::<T, A>::len ](vec: &Vec<T, A>) -> (len: usize)
     ensures
@@ -96,12 +106,58 @@ pub assume_specification<T, A: Allocator>[ Vec::<T, A>::len ](vec: &Vec<T, A>) -
     no_unwind
 ;
 
+#[cfg(not(verus_verify_core))]
+#[verifier::external_body]
+#[pbt(backend = "bolero")]
+pub fn pbt_vec_len(vec: Vec<u32>) -> (len: usize)
+    ensures
+        len == vec@.len(),
+{
+    Vec::<u32>::len(&vec)
+}
+
+// Bounded-size wrappers for the allocation-hazard family: the sampled
+// size is `u16` (max 65535 elements ≈ 256 KiB of u32 — safely
+// allocatable), so the harness exercises the contract without tripping
+// the capacity-overflow abort that an edge-biased `usize` sample would.
+#[cfg(not(verus_verify_core))]
+#[verifier::external_body]
+#[pbt(backend = "bolero")]
+pub fn pbt_vec_with_capacity_bounded(capacity: u16) -> (v: Vec<u32>)
+    ensures
+        v@ == Seq::<u32>::empty(),
+{
+    Vec::<u32>::with_capacity(capacity as usize)
+}
+
+#[cfg(not(verus_verify_core))]
+#[verifier::external_body]
+#[pbt(backend = "bolero")]
+pub fn pbt_vec_reserve_bounded(vec: &mut Vec<u32>, additional: u16)
+    ensures
+        final(vec)@ == old(vec)@,
+{
+    Vec::<u32>::reserve(vec, additional as usize)
+}
+
+#[cfg(not(verus_verify_core))]
+#[verifier::external_body]
+#[pbt(backend = "bolero")]
+pub fn pbt_vec_from_elem_bounded(elem: u32, n: u16) -> (ret: bool)
+    ensures ret,
+{
+    let v = alloc::vec::from_elem(elem, n as usize);
+    v.len() == n as usize && v.iter().all(|x| *x == elem)
+}
+
 ////// Other functions
+#[pbt(T = u32)]
 pub assume_specification<T>[ Vec::<T>::new ]() -> (v: Vec<T>)
     ensures
         v@ == Seq::<T>::empty(),
 ;
 
+#[pbt(T = u32)]
 pub assume_specification<T>[ <Vec<T> as core::default::Default>::default ]() -> (v: Vec<T>)
     ensures
         v@ == Seq::<T>::empty(),
@@ -112,6 +168,12 @@ pub assume_specification<T, A: Allocator>[ Vec::<T, A>::new_in ](alloc: A) -> (v
         v@ == Seq::<T>::empty(),
 ;
 
+// (no #[pbt] directly on with_capacity / reserve / try_reserve /
+// from_elem: their size params are sampled edge-biased, and a
+// near-usize::MAX request panics/aborts on allocation failure — a crash
+// the specs don't forbid, so a direct harness would report false
+// failures. The `pbt_*_bounded` wrappers below restate the contracts
+// over a `u16`-bounded size domain instead.)
 pub assume_specification<T>[ Vec::<T>::with_capacity ](capacity: usize) -> (v: Vec<T>)
     ensures
         v@ == Seq::<T>::empty(),
@@ -138,11 +200,13 @@ pub assume_specification<T, A: Allocator>[ Vec::<T, A>::try_reserve ](
         final(vec)@ == old(vec)@,
 ;
 
+#[pbt(T = u32, A = alloc::alloc::Global, backend = "bolero")]
 pub assume_specification<T, A: Allocator>[ Vec::<T, A>::push ](vec: &mut Vec<T, A>, value: T)
     ensures
         final(vec)@ == old(vec)@.push(value),
 ;
 
+#[pbt(T = u32, A = alloc::alloc::Global, backend = "bolero")]
 pub assume_specification<T, A: Allocator>[ Vec::<T, A>::pop ](vec: &mut Vec<T, A>) -> (value:
     Option<T>)
     ensures
@@ -151,6 +215,7 @@ pub assume_specification<T, A: Allocator>[ Vec::<T, A>::pop ](vec: &mut Vec<T, A
         old(vec)@.len() == 0 ==> value == None::<T> && final(vec)@ == old(vec)@,
 ;
 
+#[pbt(T = u32, A = alloc::alloc::Global, backend = "bolero")]
 pub assume_specification<T, A: Allocator>[ Vec::<T, A>::append ](
     vec: &mut Vec<T, A>,
     other: &mut Vec<T, A>,
@@ -160,6 +225,9 @@ pub assume_specification<T, A: Allocator>[ Vec::<T, A>::append ](
         final(other)@ == Seq::<T>::empty(),
 ;
 
+// (no #[pbt]: the quantified ensures mixes `final(vec)@[i]` with an
+// if/else over `old(vec)` bounds — outside the engine's quantifier
+// lowering)
 pub assume_specification<T: core::clone::Clone, A: Allocator>[ Vec::<T, A>::extend_from_slice ](
     vec: &mut Vec<T, A>,
     other: &[T],
@@ -175,6 +243,7 @@ pub assume_specification<T: core::clone::Clone, A: Allocator>[ Vec::<T, A>::exte
             },
 ;
 
+#[cfg(verus_keep_ghost)]
 impl<T: Sized, I: SliceIndex<[T]>, A: Allocator> super::core::IndexSpecImpl<I> for Vec<T, A> {
     open spec fn index_req(&self, index: &I) -> bool {
         forall|s: &[T]| #[trigger] s@ == self@ ==> index.index_req(s)
@@ -189,6 +258,7 @@ pub assume_specification<T, I: SliceIndex<[T]>, A: Allocator>[Vec::<T, A>::index
         exists|s: &[T]| #[trigger] s@ == vec@ && call_ensures(<I as SliceIndex<[T]>>::index, (i, s), r),
 ;
 
+#[pbt(T = u32, A = alloc::alloc::Global, backend = "bolero")]
 pub assume_specification<T, A: Allocator>[ Vec::<T, A>::swap_remove ](
     vec: &mut Vec<T, A>,
     i: usize,
@@ -200,6 +270,7 @@ pub assume_specification<T, A: Allocator>[ Vec::<T, A>::swap_remove ](
         final(vec)@ == old(vec)@.update(i as int, old(vec)@.last()).drop_last(),
 ;
 
+#[pbt(T = u32, A = alloc::alloc::Global, backend = "bolero")]
 pub assume_specification<T, A: Allocator>[ Vec::<T, A>::insert ](
     vec: &mut Vec<T, A>,
     i: usize,
@@ -211,12 +282,14 @@ pub assume_specification<T, A: Allocator>[ Vec::<T, A>::insert ](
         final(vec)@ == old(vec)@.insert(i as int, element),
 ;
 
+#[pbt(T = u32, A = alloc::alloc::Global, backend = "bolero")]
 pub assume_specification<T, A: Allocator> [ <Vec<T, A>>::is_empty ](
     v: &Vec<T, A>,
 ) -> (res: bool)
     ensures res <==> v@.len() == 0,
 ;
 
+#[pbt(T = u32, A = alloc::alloc::Global, backend = "bolero")]
 pub assume_specification<T, A: Allocator>[ Vec::<T, A>::remove ](
     vec: &mut Vec<T, A>,
     i: usize,
@@ -228,11 +301,13 @@ pub assume_specification<T, A: Allocator>[ Vec::<T, A>::remove ](
         final(vec)@ == old(vec)@.remove(i as int),
 ;
 
+#[pbt(T = u32, A = alloc::alloc::Global, backend = "bolero")]
 pub assume_specification<T, A: Allocator>[ Vec::<T, A>::clear ](vec: &mut Vec<T, A>)
     ensures
         final(vec).view() == Seq::<T>::empty(),
 ;
 
+#[pbt(T = u32, A = alloc::alloc::Global, backend = "bolero")]
 pub assume_specification<T, A: Allocator>[ Vec::<T, A>::as_slice ](vec: &Vec<T, A>) -> (slice: &[T])
     ensures
         slice@ == vec@,
@@ -245,6 +320,7 @@ pub assume_specification<T, A: Allocator>[ Vec::<T, A>::as_mut_slice ](vec: &mut
         final(slice)@ == final(vec)@,
 ;
 
+#[pbt(T = u32, A = alloc::alloc::Global, backend = "bolero")]
 pub assume_specification<T, A: Allocator>[ <Vec<T, A> as core::ops::Deref>::deref ](
     vec: &Vec<T, A>,
 ) -> (slice: &[T])
@@ -260,6 +336,7 @@ pub assume_specification<T, A: Allocator>[ <Vec<T, A> as core::ops::DerefMut>::d
         final(slice)@ == final(vec)@,
 ;
 
+#[pbt(T = u32, A = alloc::alloc::Global, backend = "bolero")]
 pub assume_specification<T, A: Allocator + core::clone::Clone>[ Vec::<T, A>::split_off ](
     vec: &mut Vec<T, A>,
     at: usize,
@@ -275,6 +352,8 @@ pub open spec fn vec_clone_trigger<T, A: Allocator>(v1: Vec<T, A>, v2: Vec<T, A>
     true
 }
 
+// (no #[pbt]: the ensures references `vec_clone_trigger`, a spec fn over
+// `Vec<T, A>` — outside the exec-companion type universe)
 pub assume_specification<T: Clone, A: Allocator + Clone>[ <Vec<T, A> as Clone>::clone ](
     vec: &Vec<T, A>,
 ) -> (res: Vec<T, A>)
@@ -297,6 +376,7 @@ pub broadcast proof fn vec_clone_deep_view_proof<T: DeepView, A: Allocator>(
 {
 }
 
+#[pbt(T = u32, A = alloc::alloc::Global, backend = "bolero")]
 pub assume_specification<T, A: Allocator>[ Vec::<T, A>::truncate ](vec: &mut Vec<T, A>, len: usize)
     ensures
         len <= old(vec).len() ==> final(vec)@ == old(vec)@.subrange(0, len as int),
@@ -332,6 +412,7 @@ pub assume_specification<T: PartialEq<U>, U, A1: Allocator, A2: Allocator>[ <Vec
 ) -> bool
 ;
 
+#[cfg(verus_keep_ghost)]
 impl<T: super::cmp::PartialEqSpec<U>, U, A1: Allocator, A2: Allocator> super::cmp::PartialEqSpecImpl<Vec<U, A2>> for Vec<T, A1> {
     open spec fn obeys_eq_spec() -> bool {
         T::obeys_eq_spec()
@@ -355,6 +436,7 @@ pub struct ExIntoIter<T, A: Allocator>(IntoIter<T, A>);
 // a prophecy, we need a function that gives us the underlying sequence of the original vec.
 pub uninterp spec fn into_iter_elts<T, A: Allocator>(i: IntoIter<T, A>) -> Seq<T>;
 
+#[cfg(verus_keep_ghost)]
 impl <T, A: Allocator> super::iter::IteratorSpecImpl for IntoIter<T, A> {
     open spec fn obeys_prophetic_iter_laws(&self) -> bool {
         true
@@ -380,6 +462,7 @@ impl <T, A: Allocator> super::iter::IteratorSpecImpl for IntoIter<T, A> {
     }
 }
 
+#[cfg(verus_keep_ghost)]
 impl <T, A: Allocator> super::iter::DoubleEndedIteratorSpecImpl for IntoIter<T, A> {
     open spec fn peek_back(&self, index: int) -> Option<Self::Item> {
         let len = into_iter_elts(*self).len();
@@ -448,6 +531,7 @@ pub assume_specification<'a, T, A: Allocator> [<&'a Vec<T, A> as core::iter::Int
         IteratorSpec::initial_value_relation(&iter, &iter),
 ;
 
+#[cfg(verus_keep_ghost)]
 impl<T>  FromIteratorSpecImpl<T> for Vec<T> {
     open spec fn from_iter_ensures(remaining: Seq<T>, s: Self) -> bool {
         remaining == s@

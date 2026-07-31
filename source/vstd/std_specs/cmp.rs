@@ -249,6 +249,27 @@ impl PartialEqSpecImpl for bool {
 
 pub assume_specification[ <bool as PartialEq<bool>>::eq ](x: &bool, y: &bool) -> bool;
 
+// PBT wrappers for the bare bool comparison specs above: their contracts
+// live in `PartialEqSpecImpl for bool` (structural equality), so the
+// wrappers restate that claim (same pattern as std_specs/num.rs).
+#[cfg(not(verus_verify_core))]
+#[verifier::external_body]
+#[pbt(backend = "bolero")]
+pub fn pbt_bool_eq(x: bool, y: bool) -> (ret: bool)
+    ensures ret == (x == y),
+{
+    <bool as PartialEq<bool>>::eq(&x, &y)
+}
+
+#[cfg(not(verus_verify_core))]
+#[verifier::external_body]
+#[pbt(backend = "bolero")]
+pub fn pbt_bool_ne(x: bool, y: bool) -> (ret: bool)
+    ensures ret == (x != y),
+{
+    <bool as PartialEq<bool>>::ne(&x, &y)
+}
+
 pub assume_specification[ <bool as PartialEq<bool>>::ne ](x: &bool, y: &bool) -> bool;
 
 /* floating point */
