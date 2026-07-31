@@ -108,7 +108,7 @@ pub assume_specification<T, A: Allocator>[ Vec::<T, A>::len ](vec: &Vec<T, A>) -
 
 #[cfg(not(verus_verify_core))]
 #[verifier::external_body]
-#[pbt(backend = "bolero")]
+#[pbt]
 pub fn pbt_vec_len(vec: Vec<u32>) -> (len: usize)
     ensures
         len == vec@.len(),
@@ -122,7 +122,7 @@ pub fn pbt_vec_len(vec: Vec<u32>) -> (len: usize)
 // the capacity-overflow abort that an edge-biased `usize` sample would.
 #[cfg(not(verus_verify_core))]
 #[verifier::external_body]
-#[pbt(backend = "bolero")]
+#[pbt]
 pub fn pbt_vec_with_capacity_bounded(capacity: u16) -> (v: Vec<u32>)
     ensures
         v@ == Seq::<u32>::empty(),
@@ -132,7 +132,7 @@ pub fn pbt_vec_with_capacity_bounded(capacity: u16) -> (v: Vec<u32>)
 
 #[cfg(not(verus_verify_core))]
 #[verifier::external_body]
-#[pbt(backend = "bolero")]
+#[pbt]
 pub fn pbt_vec_reserve_bounded(vec: &mut Vec<u32>, additional: u16)
     ensures
         final(vec)@ == old(vec)@,
@@ -142,7 +142,7 @@ pub fn pbt_vec_reserve_bounded(vec: &mut Vec<u32>, additional: u16)
 
 #[cfg(not(verus_verify_core))]
 #[verifier::external_body]
-#[pbt(backend = "bolero")]
+#[pbt]
 pub fn pbt_vec_from_elem_bounded(elem: u32, n: u16) -> (ret: bool)
     ensures ret,
 {
@@ -200,13 +200,13 @@ pub assume_specification<T, A: Allocator>[ Vec::<T, A>::try_reserve ](
         final(vec)@ == old(vec)@,
 ;
 
-#[pbt(T = u32, A = alloc::alloc::Global, backend = "bolero")]
+#[pbt(T = u32, A = alloc::alloc::Global)]
 pub assume_specification<T, A: Allocator>[ Vec::<T, A>::push ](vec: &mut Vec<T, A>, value: T)
     ensures
         final(vec)@ == old(vec)@.push(value),
 ;
 
-#[pbt(T = u32, A = alloc::alloc::Global, backend = "bolero")]
+#[pbt(T = u32, A = alloc::alloc::Global)]
 pub assume_specification<T, A: Allocator>[ Vec::<T, A>::pop ](vec: &mut Vec<T, A>) -> (value:
     Option<T>)
     ensures
@@ -215,7 +215,7 @@ pub assume_specification<T, A: Allocator>[ Vec::<T, A>::pop ](vec: &mut Vec<T, A
         old(vec)@.len() == 0 ==> value == None::<T> && final(vec)@ == old(vec)@,
 ;
 
-#[pbt(T = u32, A = alloc::alloc::Global, backend = "bolero")]
+#[pbt(T = u32, A = alloc::alloc::Global)]
 pub assume_specification<T, A: Allocator>[ Vec::<T, A>::append ](
     vec: &mut Vec<T, A>,
     other: &mut Vec<T, A>,
@@ -258,7 +258,7 @@ pub assume_specification<T, I: SliceIndex<[T]>, A: Allocator>[Vec::<T, A>::index
         exists|s: &[T]| #[trigger] s@ == vec@ && call_ensures(<I as SliceIndex<[T]>>::index, (i, s), r),
 ;
 
-#[pbt(T = u32, A = alloc::alloc::Global, backend = "bolero")]
+#[pbt(T = u32, A = alloc::alloc::Global)]
 pub assume_specification<T, A: Allocator>[ Vec::<T, A>::swap_remove ](
     vec: &mut Vec<T, A>,
     i: usize,
@@ -270,7 +270,7 @@ pub assume_specification<T, A: Allocator>[ Vec::<T, A>::swap_remove ](
         final(vec)@ == old(vec)@.update(i as int, old(vec)@.last()).drop_last(),
 ;
 
-#[pbt(T = u32, A = alloc::alloc::Global, backend = "bolero")]
+#[pbt(T = u32, A = alloc::alloc::Global)]
 pub assume_specification<T, A: Allocator>[ Vec::<T, A>::insert ](
     vec: &mut Vec<T, A>,
     i: usize,
@@ -282,14 +282,14 @@ pub assume_specification<T, A: Allocator>[ Vec::<T, A>::insert ](
         final(vec)@ == old(vec)@.insert(i as int, element),
 ;
 
-#[pbt(T = u32, A = alloc::alloc::Global, backend = "bolero")]
+#[pbt(T = u32, A = alloc::alloc::Global)]
 pub assume_specification<T, A: Allocator> [ <Vec<T, A>>::is_empty ](
     v: &Vec<T, A>,
 ) -> (res: bool)
     ensures res <==> v@.len() == 0,
 ;
 
-#[pbt(T = u32, A = alloc::alloc::Global, backend = "bolero")]
+#[pbt(T = u32, A = alloc::alloc::Global)]
 pub assume_specification<T, A: Allocator>[ Vec::<T, A>::remove ](
     vec: &mut Vec<T, A>,
     i: usize,
@@ -301,13 +301,13 @@ pub assume_specification<T, A: Allocator>[ Vec::<T, A>::remove ](
         final(vec)@ == old(vec)@.remove(i as int),
 ;
 
-#[pbt(T = u32, A = alloc::alloc::Global, backend = "bolero")]
+#[pbt(T = u32, A = alloc::alloc::Global)]
 pub assume_specification<T, A: Allocator>[ Vec::<T, A>::clear ](vec: &mut Vec<T, A>)
     ensures
         final(vec).view() == Seq::<T>::empty(),
 ;
 
-#[pbt(T = u32, A = alloc::alloc::Global, backend = "bolero")]
+#[pbt(T = u32, A = alloc::alloc::Global)]
 pub assume_specification<T, A: Allocator>[ Vec::<T, A>::as_slice ](vec: &Vec<T, A>) -> (slice: &[T])
     ensures
         slice@ == vec@,
@@ -320,7 +320,7 @@ pub assume_specification<T, A: Allocator>[ Vec::<T, A>::as_mut_slice ](vec: &mut
         final(slice)@ == final(vec)@,
 ;
 
-#[pbt(T = u32, A = alloc::alloc::Global, backend = "bolero")]
+#[pbt(T = u32, A = alloc::alloc::Global)]
 pub assume_specification<T, A: Allocator>[ <Vec<T, A> as core::ops::Deref>::deref ](
     vec: &Vec<T, A>,
 ) -> (slice: &[T])
@@ -336,7 +336,7 @@ pub assume_specification<T, A: Allocator>[ <Vec<T, A> as core::ops::DerefMut>::d
         final(slice)@ == final(vec)@,
 ;
 
-#[pbt(T = u32, A = alloc::alloc::Global, backend = "bolero")]
+#[pbt(T = u32, A = alloc::alloc::Global)]
 pub assume_specification<T, A: Allocator + core::clone::Clone>[ Vec::<T, A>::split_off ](
     vec: &mut Vec<T, A>,
     at: usize,
@@ -376,7 +376,7 @@ pub broadcast proof fn vec_clone_deep_view_proof<T: DeepView, A: Allocator>(
 {
 }
 
-#[pbt(T = u32, A = alloc::alloc::Global, backend = "bolero")]
+#[pbt(T = u32, A = alloc::alloc::Global)]
 pub assume_specification<T, A: Allocator>[ Vec::<T, A>::truncate ](vec: &mut Vec<T, A>, len: usize)
     ensures
         len <= old(vec).len() ==> final(vec)@ == old(vec)@.subrange(0, len as int),

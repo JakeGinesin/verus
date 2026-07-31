@@ -189,7 +189,7 @@ impl_int_try_from_spec! { isize => [u8 u16 u32 u64 u128 i8 i16 i32 i64 i128 usiz
 // values yield `Err`. Those are trusted axioms — if they don't match the real
 // std impl, that's unsoundness. Each wrapper below re-states the intended
 // range/truncation contract as an `ensures` and calls the real std
-// conversion; a `#[pbt(backend = "bolero")]` harness then fuzzes the input
+// conversion; a `#[pbt]` harness then fuzzes the input
 // (edge-biased, so `MIN`/`MAX`/`0`/boundary values are hit) and fails if the
 // real conversion violates the assumed spec.
 //
@@ -200,7 +200,7 @@ macro_rules! pbt_try_from_test {
         verus! {
             #[cfg(not(verus_verify_core))]
             #[verifier::external_body]
-            #[pbt(backend = "bolero")]
+            #[pbt]
             pub fn $name(a: $from) -> (ret: Option<$to>)
                 // Full range-decision spec (enabled by engine feature A1,
                 // which lifts these cross-width `as int` comparisons and the
@@ -262,7 +262,7 @@ macro_rules! pbt_from_test {
         verus! {
             #[cfg(not(verus_verify_core))]
             #[verifier::external_body]
-            #[pbt(backend = "bolero")]
+            #[pbt]
             pub fn $name(a: $from) -> (ret: $to)
                 ensures
                     (ret as $from) == a,

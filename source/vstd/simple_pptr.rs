@@ -609,7 +609,7 @@ pub use raw_ptr::MemContents;
 /// `PPtr::read`: certified copy-out read through a shared permission.
 #[cfg(not(verus_verify_core))]
 #[verifier::external_body]
-#[pbt(backend = "bolero")]
+#[pbt]
 pub fn pbt_pptr_read_u32(ptr: PPtr<u32>, Tracked(perm): Tracked<&PointsTo<u32>>) -> (v: u32)
     requires
         perm.pptr() == ptr,
@@ -624,7 +624,7 @@ pub fn pbt_pptr_read_u32(ptr: PPtr<u32>, Tracked(perm): Tracked<&PointsTo<u32>>)
 /// dereferenced inside the trusted wrapper, as with `pbt_ptr_mut_ref_u32`).
 #[cfg(not(verus_verify_core))]
 #[verifier::external_body]
-#[pbt(backend = "bolero")]
+#[pbt]
 pub fn pbt_pptr_borrow_mut_u32(
     ptr: PPtr<u32>,
     Tracked(perm): Tracked<&mut PointsTo<u32>>,
@@ -643,7 +643,7 @@ pub fn pbt_pptr_borrow_mut_u32(
 /// `PPtr::write`: overwriting write (no init precondition; `u32: Copy`).
 #[cfg(not(verus_verify_core))]
 #[verifier::external_body]
-#[pbt(backend = "bolero")]
+#[pbt]
 pub fn pbt_pptr_write_u32(ptr: PPtr<u32>, Tracked(perm): Tracked<&mut PointsTo<u32>>, v: u32)
     requires
         old(perm).pptr() == ptr,
@@ -657,7 +657,7 @@ pub fn pbt_pptr_write_u32(ptr: PPtr<u32>, Tracked(perm): Tracked<&mut PointsTo<u
 /// `PPtr::take`: certified move-out; memory becomes uninit.
 #[cfg(not(verus_verify_core))]
 #[verifier::external_body]
-#[pbt(backend = "bolero")]
+#[pbt]
 pub fn pbt_pptr_take_u32(ptr: PPtr<u32>, Tracked(perm): Tracked<&mut PointsTo<u32>>) -> (v: u32)
     requires
         old(perm).pptr() == ptr,
@@ -672,7 +672,7 @@ pub fn pbt_pptr_take_u32(ptr: PPtr<u32>, Tracked(perm): Tracked<&mut PointsTo<u3
 /// `PPtr::replace`: swap; returns the old value, memory holds the new one.
 #[cfg(not(verus_verify_core))]
 #[verifier::external_body]
-#[pbt(backend = "bolero")]
+#[pbt]
 pub fn pbt_pptr_replace_u32(
     ptr: PPtr<u32>,
     Tracked(perm): Tracked<&mut PointsTo<u32>>,
@@ -692,7 +692,7 @@ pub fn pbt_pptr_replace_u32(
 /// `PPtr::put`: write into uninit memory.
 #[cfg(not(verus_verify_core))]
 #[verifier::external_body]
-#[pbt(backend = "bolero")]
+#[pbt]
 pub fn pbt_pptr_put_u32(ptr: PPtr<u32>, Tracked(perm): Tracked<&mut PointsTo<u32>>, v: u32)
     requires
         old(perm).pptr() == ptr,
@@ -707,7 +707,7 @@ pub fn pbt_pptr_put_u32(ptr: PPtr<u32>, Tracked(perm): Tracked<&mut PointsTo<u32
 /// `PPtr::borrow`: shared borrow, observed by value.
 #[cfg(not(verus_verify_core))]
 #[verifier::external_body]
-#[pbt(backend = "bolero")]
+#[pbt]
 pub fn pbt_pptr_borrow_u32(ptr: PPtr<u32>, Tracked(perm): Tracked<&PointsTo<u32>>) -> (v: u32)
     requires
         perm.pptr() == ptr,

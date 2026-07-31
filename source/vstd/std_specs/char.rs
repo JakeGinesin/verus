@@ -41,7 +41,7 @@ external_pbt_provide! {
 
 /// The byte width of `c`'s UTF-8 encoding, using the same scalar-value
 /// boundaries as [`encode_scalar`].
-#[pbt(backend = "bolero")]
+#[pbt]
 #[verifier::allow_in_spec]
 pub assume_specification[ char::len_utf8 ](c: char) -> usize
     returns
@@ -59,7 +59,7 @@ pub open spec fn is_white_space(c: char) -> bool {
         == '\u{3000}'
 }
 
-#[pbt(backend = "bolero")]
+#[pbt]
 pub assume_specification[ char::is_whitespace ](c: char) -> (res: bool)
     returns
         is_white_space(c),

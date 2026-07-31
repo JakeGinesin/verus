@@ -312,4 +312,206 @@ pub broadcast group group_hash_set_axioms {
     axiom_string_hash_set_spec_len,
 }
 
+// ---------------------------------------------------------------------------
+// Composite PBT wrappers for the `HashSetWithView` / `StringHashSet` method
+// contracts. Same design as the map wrappers in hash_map.rs: sample a plain
+// `HashSet` model, replay-construct the receiver, run the method, check the
+// claim via `len`-plus-`contains` probing (sound and complete for set
+// equality given the wrapper exposes no iteration).
+// ---------------------------------------------------------------------------
+
+/// Replay-construct a `HashSetWithView<u32>` from a model.
+#[cfg(all(feature = "std", not(verus_verify_core)))]
+#[verifier::external_body]
+fn pbt_hswv_build(model: &std::collections::HashSet<u32>) -> HashSetWithView<u32> {
+    let mut s = HashSetWithView::<u32>::new();
+    for k in model.iter() {
+        s.insert(*k);
+    }
+    s
+}
+
+/// Probe-based set equality: `len` + pointwise `contains`.
+#[cfg(all(feature = "std", not(verus_verify_core)))]
+#[verifier::external_body]
+fn pbt_hswv_matches(s: &HashSetWithView<u32>, expected: &std::collections::HashSet<u32>) -> bool {
+    s.len() == expected.len() && expected.iter().all(|k| s.contains(k))
+}
+
+/// Replay-construct a `StringHashSet` from a model.
+#[cfg(all(feature = "std", not(verus_verify_core)))]
+#[verifier::external_body]
+fn pbt_shs_build(model: &std::collections::HashSet<String>) -> StringHashSet {
+    let mut s = StringHashSet::new();
+    for k in model.iter() {
+        s.insert(k.clone());
+    }
+    s
+}
+
+/// Probe-based set equality for the string-keyed wrapper.
+#[cfg(all(feature = "std", not(verus_verify_core)))]
+#[verifier::external_body]
+fn pbt_shs_matches(s: &StringHashSet, expected: &std::collections::HashSet<String>) -> bool {
+    s.len() == expected.len() && expected.iter().all(|k| s.contains(k.as_str()))
+}
+
+/// `new` / `is_empty` / `len` on the empty set.
+#[cfg(all(feature = "std", not(verus_verify_core)))]
+#[verifier::external_body]
+#[pbt]
+pub fn pbt_hswv_new() -> (ret: bool)
+    ensures ret,
+{
+    let s = HashSetWithView::<u32>::new();
+    s.is_empty() && s.len() == 0
+}
+
+/// `with_capacity` over a bounded size domain.
+#[cfg(all(feature = "std", not(verus_verify_core)))]
+#[verifier::external_body]
+#[pbt]
+pub fn pbt_hswv_with_capacity_bounded(capacity: u16) -> (ret: bool)
+    ensures ret,
+{
+    let s = HashSetWithView::<u32>::with_capacity(capacity as usize);
+    s.is_empty() && s.len() == 0
+}
+
+/// `reserve` leaves the set unchanged (bounded size domain).
+#[cfg(all(feature = "std", not(verus_verify_core)))]
+#[verifier::external_body]
+#[pbt]
+pub fn pbt_hswv_reserve_bounded(model: std::collections::HashSet<u32>, additional: u16) -> (ret: bool)
+    ensures ret,
+{
+    let mut s = pbt_hswv_build(&model);
+    s.reserve(additional as usize);
+    pbt_hswv_matches(&s, &model)
+}
+
+/// `len` / `is_empty` agree with the model.
+#[cfg(all(feature = "std", not(verus_verify_core)))]
+#[verifier::external_body]
+#[pbt]
+pub fn pbt_hswv_len_is_empty(model: std::collections::HashSet<u32>) -> (ret: bool)
+    ensures ret,
+{
+    let s = pbt_hswv_build(&model);
+    s.len() == model.len() && s.is_empty() == model.is_empty()
+}
+
+/// `insert`: result is "newly inserted"; post-state adds the element.
+#[cfg(all(feature = "std", not(verus_verify_core)))]
+#[verifier::external_body]
+#[pbt]
+pub fn pbt_hswv_insert(model: std::collections::HashSet<u32>, k: u32) -> (ret: bool)
+    ensures ret,
+{
+    let mut s = pbt_hswv_build(&model);
+    let result = s.insert(k);
+    let mut expected = model;
+    let expected_result = expected.insert(k);
+    result == expected_result && pbt_hswv_matches(&s, &expected)
+}
+
+/// `remove`: result is "was present"; post-state drops the element.
+#[cfg(all(feature = "std", not(verus_verify_core)))]
+#[verifier::external_body]
+#[pbt]
+pub fn pbt_hswv_remove(model: std::collections::HashSet<u32>, k: u32) -> (ret: bool)
+    ensures ret,
+{
+    let mut s = pbt_hswv_build(&model);
+    let result = s.remove(&k);
+    let mut expected = model;
+    let expected_result = expected.remove(&k);
+    result == expected_result && pbt_hswv_matches(&s, &expected)
+}
+
+/// `contains` / `get` agree with the model (`get` returns the set's own
+/// element, which for `u32` must equal the probe key itself).
+#[cfg(all(feature = "std", not(verus_verify_core)))]
+#[verifier::external_body]
+#[pbt]
+pub fn pbt_hswv_contains_get(model: std::collections::HashSet<u32>, k: u32) -> (ret: bool)
+    ensures ret,
+{
+    let s = pbt_hswv_build(&model);
+    s.contains(&k) == model.contains(&k)
+        && s.get(&k).copied() == (if model.contains(&k) { Some(k) } else { None })
+}
+
+/// `clear`: post-state is empty.
+#[cfg(all(feature = "std", not(verus_verify_core)))]
+#[verifier::external_body]
+#[pbt]
+pub fn pbt_hswv_clear(model: std::collections::HashSet<u32>) -> (ret: bool)
+    ensures ret,
+{
+    let mut s = pbt_hswv_build(&model);
+    s.clear();
+    s.is_empty() && s.len() == 0
+}
+
+/// StringHashSet: `new` plus the insert/remove/contains/get family.
+#[cfg(all(feature = "std", not(verus_verify_core)))]
+#[verifier::external_body]
+#[pbt]
+pub fn pbt_shs_new() -> (ret: bool)
+    ensures ret,
+{
+    let s = StringHashSet::new();
+    s.is_empty() && s.len() == 0
+}
+
+#[cfg(all(feature = "std", not(verus_verify_core)))]
+#[verifier::external_body]
+#[pbt]
+pub fn pbt_shs_insert(model: std::collections::HashSet<String>, k: String) -> (ret: bool)
+    ensures ret,
+{
+    let mut s = pbt_shs_build(&model);
+    let result = s.insert(k.clone());
+    let mut expected = model;
+    let expected_result = expected.insert(k);
+    result == expected_result && pbt_shs_matches(&s, &expected)
+}
+
+#[cfg(all(feature = "std", not(verus_verify_core)))]
+#[verifier::external_body]
+#[pbt]
+pub fn pbt_shs_remove(model: std::collections::HashSet<String>, k: String) -> (ret: bool)
+    ensures ret,
+{
+    let mut s = pbt_shs_build(&model);
+    let result = s.remove(k.as_str());
+    let mut expected = model;
+    let expected_result = expected.remove(&k);
+    result == expected_result && pbt_shs_matches(&s, &expected)
+}
+
+#[cfg(all(feature = "std", not(verus_verify_core)))]
+#[verifier::external_body]
+#[pbt]
+pub fn pbt_shs_contains_get(model: std::collections::HashSet<String>, k: String) -> (ret: bool)
+    ensures ret,
+{
+    let s = pbt_shs_build(&model);
+    s.len() == model.len() && s.is_empty() == model.is_empty()
+        && s.contains(k.as_str()) == model.contains(&k)
+        && s.get(k.as_str()).cloned() == (if model.contains(&k) { Some(k) } else { None })
+}
+
+#[cfg(all(feature = "std", not(verus_verify_core)))]
+#[verifier::external_body]
+#[pbt]
+pub fn pbt_shs_clear(model: std::collections::HashSet<String>) -> (ret: bool)
+    ensures ret,
+{
+    let mut s = pbt_shs_build(&model);
+    s.clear();
+    s.is_empty() && s.len() == 0
+}
+
 } // verus!

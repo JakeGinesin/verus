@@ -60,7 +60,7 @@ pub broadcast proof fn lemma_array_index<T, const N: usize>(a: [T; N], i: int)
 }
 
 impl<T, const N: usize> ArrayAdditionalExecFns<T> for [T; N] {
-    #[pbt(T = u8, N = 4, backend = "bolero")]
+    #[pbt(T = u8, N = 4)]
     #[verifier::external_body]
     fn set(&mut self, idx: usize, t: T)
         requires
@@ -72,7 +72,7 @@ impl<T, const N: usize> ArrayAdditionalExecFns<T> for [T; N] {
     }
 }
 
-#[pbt(T = u8, N = 4, backend = "bolero")]
+#[pbt(T = u8, N = 4)]
 #[verifier::external_body]
 #[cfg_attr(verus_keep_ghost, rustc_diagnostic_item = "verus::vstd::array::array_index_get")]
 pub exec fn array_index_get<T, const N: usize>(ar: &[T; N], i: usize) -> (out: &T)
@@ -143,7 +143,7 @@ pub fn array_as_slice<T, const N: usize>(ar: &[T; N]) -> (out: &[T])
     ar
 }
 
-#[pbt(T = u8, N = 4, backend = "bolero")]
+#[pbt(T = u8, N = 4)]
 pub assume_specification<T, const N: usize>[ <[T; N]>::as_slice ](ar: &[T; N]) -> (out: &[T])
     ensures
         ar@ == out@,

@@ -335,4 +335,262 @@ pub broadcast group group_hash_map_axioms {
     axiom_string_hash_map_spec_len,
 }
 
+// ---------------------------------------------------------------------------
+// Composite PBT wrappers for the `HashMapWithView` / `StringHashMap` method
+// contracts.
+//
+// The receivers can't be sampled directly: the wrapped field is private and
+// the `View` is uninterp, so a model can't be projected out of a receiver. 
+// Each wrapper (1) samples a plain `HashMap` model, (2) replay-constructs 
+// the receiver via `new()` + `insert`, (3) runs the method under test, and 
+// (4) checks the contract's claim against an independently computed expected model using
+// `len`-plus-`get` probing. 
+//
+// Known bootstrap circularity: `insert` builds the receiver whose methods
+// are under test. A broken `insert` perturbs the constructed state and
+// fails the expected-vs-probed relation at some sample, but constructor
+// coverage is weaker than an engine-side treatment would give.
+// ---------------------------------------------------------------------------
+
+/// Replay-construct a `HashMapWithView<u32, u32>` from a model.
+#[cfg(all(feature = "std", not(verus_verify_core)))]
+#[verifier::external_body]
+fn pbt_hmwv_build(model: &std::collections::HashMap<u32, u32>) -> HashMapWithView<u32, u32> {
+    let mut m = HashMapWithView::<u32, u32>::new();
+    for (k, v) in model.iter() {
+        m.insert(*k, *v);
+    }
+    m
+}
+
+/// Probe-based map equality: `len` + pointwise `get` over the expected keys.
+#[cfg(all(feature = "std", not(verus_verify_core)))]
+#[verifier::external_body]
+fn pbt_hmwv_matches(
+    m: &HashMapWithView<u32, u32>,
+    expected: &std::collections::HashMap<u32, u32>,
+) -> bool {
+    m.len() == expected.len() && expected.iter().all(|(k, v)| m.get(k) == Some(v))
+}
+
+/// Replay-construct a `StringHashMap<u32>` from a model.
+#[cfg(all(feature = "std", not(verus_verify_core)))]
+#[verifier::external_body]
+fn pbt_shm_build(model: &std::collections::HashMap<String, u32>) -> StringHashMap<u32> {
+    let mut m = StringHashMap::<u32>::new();
+    for (k, v) in model.iter() {
+        m.insert(k.clone(), *v);
+    }
+    m
+}
+
+/// Probe-based map equality for the string-keyed wrapper.
+#[cfg(all(feature = "std", not(verus_verify_core)))]
+#[verifier::external_body]
+fn pbt_shm_matches(
+    m: &StringHashMap<u32>,
+    expected: &std::collections::HashMap<String, u32>,
+) -> bool {
+    m.len() == expected.len() && expected.iter().all(|(k, v)| m.get(k.as_str()) == Some(v))
+}
+
+/// `new` / `is_empty` / `len` on the empty map.
+#[cfg(all(feature = "std", not(verus_verify_core)))]
+#[verifier::external_body]
+#[pbt]
+pub fn pbt_hmwv_new() -> (ret: bool)
+    ensures ret,
+{
+    let m = HashMapWithView::<u32, u32>::new();
+    m.is_empty() && m.len() == 0
+}
+
+/// `with_capacity` over a bounded size domain (see vec.rs `pbt_*_bounded`).
+#[cfg(all(feature = "std", not(verus_verify_core)))]
+#[verifier::external_body]
+#[pbt]
+pub fn pbt_hmwv_with_capacity_bounded(capacity: u16) -> (ret: bool)
+    ensures ret,
+{
+    let m = HashMapWithView::<u32, u32>::with_capacity(capacity as usize);
+    m.is_empty() && m.len() == 0
+}
+
+/// `reserve` leaves the map unchanged (bounded size domain).
+#[cfg(all(feature = "std", not(verus_verify_core)))]
+#[verifier::external_body]
+#[pbt]
+pub fn pbt_hmwv_reserve_bounded(model: std::collections::HashMap<u32, u32>, additional: u16) -> (ret: bool)
+    ensures ret,
+{
+    let mut m = pbt_hmwv_build(&model);
+    m.reserve(additional as usize);
+    pbt_hmwv_matches(&m, &model)
+}
+
+/// `is_empty` / `len` agree with the model.
+#[cfg(all(feature = "std", not(verus_verify_core)))]
+#[verifier::external_body]
+#[pbt]
+pub fn pbt_hmwv_len_is_empty(model: std::collections::HashMap<u32, u32>) -> (ret: bool)
+    ensures ret,
+{
+    let m = pbt_hmwv_build(&model);
+    m.len() == model.len() && m.is_empty() == model.is_empty()
+}
+
+/// `insert`: post-state is the model plus the binding.
+#[cfg(all(feature = "std", not(verus_verify_core)))]
+#[verifier::external_body]
+#[pbt]
+pub fn pbt_hmwv_insert(model: std::collections::HashMap<u32, u32>, k: u32, v: u32) -> (ret: bool)
+    ensures ret,
+{
+    let mut m = pbt_hmwv_build(&model);
+    m.insert(k, v);
+    let mut expected = model;
+    expected.insert(k, v);
+    pbt_hmwv_matches(&m, &expected)
+}
+
+/// `remove`: returned value matches the old binding; post-state drops it.
+#[cfg(all(feature = "std", not(verus_verify_core)))]
+#[verifier::external_body]
+#[pbt]
+pub fn pbt_hmwv_remove(model: std::collections::HashMap<u32, u32>, k: u32) -> (ret: bool)
+    ensures ret,
+{
+    let mut m = pbt_hmwv_build(&model);
+    let out = m.remove(&k);
+    let mut expected = model;
+    let expected_out = expected.remove(&k);
+    out == expected_out && pbt_hmwv_matches(&m, &expected)
+}
+
+/// `contains_key` / `get` agree with the model.
+#[cfg(all(feature = "std", not(verus_verify_core)))]
+#[verifier::external_body]
+#[pbt]
+pub fn pbt_hmwv_contains_get(model: std::collections::HashMap<u32, u32>, k: u32) -> (ret: bool)
+    ensures ret,
+{
+    let m = pbt_hmwv_build(&model);
+    m.contains_key(&k) == model.contains_key(&k)
+        && m.get(&k).copied() == model.get(&k).copied()
+}
+
+/// `clear`: post-state is empty.
+#[cfg(all(feature = "std", not(verus_verify_core)))]
+#[verifier::external_body]
+#[pbt]
+pub fn pbt_hmwv_clear(model: std::collections::HashMap<u32, u32>) -> (ret: bool)
+    ensures ret,
+{
+    let mut m = pbt_hmwv_build(&model);
+    m.clear();
+    m.is_empty() && m.len() == 0
+}
+
+/// `union_prefer_right`: post-state is the left model overwritten by the
+/// right (`Map::union_prefer_right` semantics).
+#[cfg(all(feature = "std", not(verus_verify_core)))]
+#[verifier::external_body]
+#[pbt]
+pub fn pbt_hmwv_union_prefer_right(
+    left: std::collections::HashMap<u32, u32>,
+    right: std::collections::HashMap<u32, u32>,
+) -> (ret: bool)
+    ensures ret,
+{
+    let mut m = pbt_hmwv_build(&left);
+    let other = pbt_hmwv_build(&right);
+    m.union_prefer_right(other);
+    let mut expected = left;
+    expected.extend(right.into_iter());
+    pbt_hmwv_matches(&m, &expected)
+}
+
+/// StringHashMap: `new` / `is_empty` / `len` on the empty map.
+#[cfg(all(feature = "std", not(verus_verify_core)))]
+#[verifier::external_body]
+#[pbt]
+pub fn pbt_shm_new() -> (ret: bool)
+    ensures ret,
+{
+    let m = StringHashMap::<u32>::new();
+    m.is_empty() && m.len() == 0
+}
+
+/// StringHashMap `insert` (String keys: the `Seq<char>` key-view is
+/// injective, so model-key equality mirrors view equality).
+#[cfg(all(feature = "std", not(verus_verify_core)))]
+#[verifier::external_body]
+#[pbt]
+pub fn pbt_shm_insert(model: std::collections::HashMap<String, u32>, k: String, v: u32) -> (ret: bool)
+    ensures ret,
+{
+    let mut m = pbt_shm_build(&model);
+    m.insert(k.clone(), v);
+    let mut expected = model;
+    expected.insert(k, v);
+    pbt_shm_matches(&m, &expected)
+}
+
+/// StringHashMap `remove` (returns nothing; post-state only).
+#[cfg(all(feature = "std", not(verus_verify_core)))]
+#[verifier::external_body]
+#[pbt]
+pub fn pbt_shm_remove(model: std::collections::HashMap<String, u32>, k: String) -> (ret: bool)
+    ensures ret,
+{
+    let mut m = pbt_shm_build(&model);
+    m.remove(k.as_str());
+    let mut expected = model;
+    expected.remove(&k);
+    pbt_shm_matches(&m, &expected)
+}
+
+/// StringHashMap `contains_key` / `get` / `len` / `is_empty`.
+#[cfg(all(feature = "std", not(verus_verify_core)))]
+#[verifier::external_body]
+#[pbt]
+pub fn pbt_shm_contains_get(model: std::collections::HashMap<String, u32>, k: String) -> (ret: bool)
+    ensures ret,
+{
+    let m = pbt_shm_build(&model);
+    m.len() == model.len() && m.is_empty() == model.is_empty()
+        && m.contains_key(k.as_str()) == model.contains_key(&k)
+        && m.get(k.as_str()).copied() == model.get(&k).copied()
+}
+
+/// StringHashMap `clear`.
+#[cfg(all(feature = "std", not(verus_verify_core)))]
+#[verifier::external_body]
+#[pbt]
+pub fn pbt_shm_clear(model: std::collections::HashMap<String, u32>) -> (ret: bool)
+    ensures ret,
+{
+    let mut m = pbt_shm_build(&model);
+    m.clear();
+    m.is_empty() && m.len() == 0
+}
+
+/// StringHashMap `union_prefer_right`.
+#[cfg(all(feature = "std", not(verus_verify_core)))]
+#[verifier::external_body]
+#[pbt]
+pub fn pbt_shm_union_prefer_right(
+    left: std::collections::HashMap<String, u32>,
+    right: std::collections::HashMap<String, u32>,
+) -> (ret: bool)
+    ensures ret,
+{
+    let mut m = pbt_shm_build(&left);
+    let other = pbt_shm_build(&right);
+    m.union_prefer_right(other);
+    let mut expected = left;
+    expected.extend(right.into_iter());
+    pbt_shm_matches(&m, &expected)
+}
+
 } // verus!

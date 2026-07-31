@@ -38,7 +38,7 @@ macro_rules! num_specs {
         mod $mod_u_tmp {
             use super::*;
 
-            #[pbt(backend = "bolero")]
+            #[pbt]
             pub assume_specification[<$uN as Clone>::clone](x: &$uN) -> (res: $uN)
                 ensures res == x;
 
@@ -113,7 +113,7 @@ macro_rules! num_specs {
             // contract against the real trait method (convert.rs pattern).
             #[cfg(not(verus_verify_core))]
             #[verifier::external_body]
-            #[pbt(backend = "bolero")]
+            #[pbt]
             pub fn pbt_cmp_eq(x: $uN, y: $uN) -> (ret: bool)
                 ensures ret == (x == y),
             {
@@ -122,7 +122,7 @@ macro_rules! num_specs {
 
             #[cfg(not(verus_verify_core))]
             #[verifier::external_body]
-            #[pbt(backend = "bolero")]
+            #[pbt]
             pub fn pbt_cmp_ne(x: $uN, y: $uN) -> (ret: bool)
                 ensures ret == (x != y),
             {
@@ -131,7 +131,7 @@ macro_rules! num_specs {
 
             #[cfg(not(verus_verify_core))]
             #[verifier::external_body]
-            #[pbt(backend = "bolero")]
+            #[pbt]
             pub fn pbt_cmp_lt(x: $uN, y: $uN) -> (ret: bool)
                 ensures ret == (x < y),
             {
@@ -140,7 +140,7 @@ macro_rules! num_specs {
 
             #[cfg(not(verus_verify_core))]
             #[verifier::external_body]
-            #[pbt(backend = "bolero")]
+            #[pbt]
             pub fn pbt_cmp_le(x: $uN, y: $uN) -> (ret: bool)
                 ensures ret == (x <= y),
             {
@@ -149,7 +149,7 @@ macro_rules! num_specs {
 
             #[cfg(not(verus_verify_core))]
             #[verifier::external_body]
-            #[pbt(backend = "bolero")]
+            #[pbt]
             pub fn pbt_cmp_gt(x: $uN, y: $uN) -> (ret: bool)
                 ensures ret == (x > y),
             {
@@ -158,7 +158,7 @@ macro_rules! num_specs {
 
             #[cfg(not(verus_verify_core))]
             #[verifier::external_body]
-            #[pbt(backend = "bolero")]
+            #[pbt]
             pub fn pbt_cmp_ge(x: $uN, y: $uN) -> (ret: bool)
                 ensures ret == (x >= y),
             {
@@ -168,7 +168,7 @@ macro_rules! num_specs {
             // Mirrors `PartialOrdSpecImpl::partial_cmp_spec` for $uN.
             #[cfg(not(verus_verify_core))]
             #[verifier::external_body]
-            #[pbt(backend = "bolero")]
+            #[pbt]
             pub fn pbt_cmp_partial_cmp(x: $uN, y: $uN) -> (ret: Option<Ordering>)
                 ensures
                     ret == (if x < y {
@@ -185,7 +185,7 @@ macro_rules! num_specs {
             // Mirrors `OrdSpecImpl::cmp_spec` for $uN.
             #[cfg(not(verus_verify_core))]
             #[verifier::external_body]
-            #[pbt(backend = "bolero")]
+            #[pbt]
             pub fn pbt_cmp_cmp(x: $uN, y: $uN) -> (ret: Ordering)
                 ensures
                     ret == (if x < y {
@@ -201,7 +201,7 @@ macro_rules! num_specs {
 
             #[verifier::allow_in_spec]
             #[cfg(not(verus_verify_core))]
-            #[pbt(backend = "bolero")]
+            #[pbt]
             pub assume_specification[<$uN>::wrapping_add](x: $uN, y: $uN) -> $uN
                 returns $mod_u::wrapping_add(x, y)
                 opens_invariants none
@@ -209,7 +209,7 @@ macro_rules! num_specs {
 
             #[verifier::allow_in_spec]
             #[cfg(not(verus_verify_core))]
-            #[pbt(backend = "bolero")]
+            #[pbt]
             pub assume_specification[<$uN>::wrapping_add_signed](x: $uN, y: $iN) -> $uN
                 returns $mod_u::wrapping_add_signed(x, y)
                 opens_invariants none
@@ -217,7 +217,7 @@ macro_rules! num_specs {
 
             #[verifier::allow_in_spec]
             #[cfg(not(verus_verify_core))]
-            #[pbt(backend = "bolero")]
+            #[pbt]
             pub assume_specification[<$uN>::wrapping_sub](x: $uN, y: $uN) -> $uN
                 returns $mod_u::wrapping_sub(x, y)
                 opens_invariants none
@@ -225,7 +225,7 @@ macro_rules! num_specs {
 
             #[verifier::allow_in_spec]
             #[cfg(not(verus_verify_core))]
-            #[pbt(backend = "bolero")]
+            #[pbt]
             pub assume_specification[<$uN>::wrapping_mul](x: $uN, y: $uN) -> $uN
                 returns $mod_u::wrapping_mul(x, y)
                 opens_invariants none
@@ -233,7 +233,7 @@ macro_rules! num_specs {
 
             #[verifier::allow_in_spec]
             #[cfg(not(verus_verify_core))]
-            #[pbt(backend = "bolero")]
+            #[pbt]
             pub assume_specification[<$uN>::wrapping_shl](x: $uN, rhs: u32) -> $uN
                 returns $mod_u::wrapping_shl(x, rhs)
                 opens_invariants none
@@ -241,7 +241,7 @@ macro_rules! num_specs {
 
             #[verifier::allow_in_spec]
             #[cfg(not(verus_verify_core))]
-            #[pbt(backend = "bolero")]
+            #[pbt]
             pub assume_specification[<$uN>::wrapping_shr](x: $uN, rhs: u32) -> $uN
                 returns $mod_u::wrapping_shr(x, rhs)
                 opens_invariants none
@@ -249,7 +249,7 @@ macro_rules! num_specs {
 
             #[verifier::allow_in_spec]
             #[cfg(not(verus_verify_core))]
-            #[pbt(backend = "bolero")]
+            #[pbt]
             pub assume_specification[<$uN>::checked_add](x: $uN, y: $uN) -> Option<$uN>
                 returns (
                     if x + y > <$uN>::MAX {
@@ -261,7 +261,7 @@ macro_rules! num_specs {
 
             #[verifier::allow_in_spec]
             #[cfg(not(verus_verify_core))]
-            #[pbt(backend = "bolero")]
+            #[pbt]
             pub assume_specification[<$uN>::checked_add_signed](x: $uN, y: $iN) -> Option<$uN>
                 returns (
                     if x + y > <$uN>::MAX || x + y < 0 {
@@ -273,7 +273,7 @@ macro_rules! num_specs {
 
             #[verifier::allow_in_spec]
             #[cfg(not(verus_verify_core))]
-            #[pbt(backend = "bolero")]
+            #[pbt]
             pub assume_specification[<$uN>::checked_sub](x: $uN, y: $uN) -> Option<$uN>
                 returns (
                     if x - y < 0 {
@@ -285,7 +285,7 @@ macro_rules! num_specs {
 
             #[verifier::allow_in_spec]
             #[cfg(not(verus_verify_core))]
-            #[pbt(backend = "bolero")]
+            #[pbt]
             pub assume_specification[<$uN>::checked_mul](x: $uN, y: $uN) -> Option<$uN>
                 returns (
                     if x * y > <$uN>::MAX {
@@ -303,7 +303,7 @@ macro_rules! num_specs {
             // overflow) in the exact int domain.
             #[cfg(not(verus_verify_core))]
             #[verifier::external_body]
-            #[pbt(backend = "bolero")]
+            #[pbt]
             pub fn pbt_checked_next_multiple_of(x: $uN, rhs: $uN) -> (ret: Option<$uN>)
                 ensures
                     ret == (if rhs == 0 {
@@ -348,14 +348,14 @@ macro_rules! num_specs {
 
             #[verifier::when_used_as_spec(checked_div)]
             #[cfg(not(verus_verify_core))]
-            #[pbt(backend = "bolero")]
+            #[pbt]
             pub assume_specification[<$uN>::checked_div](lhs: $uN, rhs: $uN) -> (result: Option<$uN>)
                 ensures
                     result == checked_div(lhs, rhs);
 
             #[verifier::when_used_as_spec(checked_div)]
             #[cfg(not(verus_verify_core))]
-            #[pbt(backend = "bolero")]
+            #[pbt]
             pub assume_specification[<$uN>::checked_div_euclid](lhs: $uN, rhs: $uN) -> (result: Option<$uN>)
                 ensures
                     // checked_div is the same as checked_div_euclid for unsigned ints
@@ -363,7 +363,7 @@ macro_rules! num_specs {
 
             #[verifier::allow_in_spec]
             #[cfg(not(verus_verify_core))]
-            #[pbt(backend = "bolero")]
+            #[pbt]
             pub assume_specification[<$uN>::checked_rem](lhs: $uN, rhs: $uN) -> Option<$uN>
                 returns (
                     if rhs == 0 {
@@ -376,7 +376,7 @@ macro_rules! num_specs {
 
             #[verifier::allow_in_spec]
             #[cfg(not(verus_verify_core))]
-            #[pbt(backend = "bolero")]
+            #[pbt]
             pub assume_specification[<$uN>::checked_rem_euclid](lhs: $uN, rhs: $uN) -> Option<$uN>
                 returns (
                     if rhs == 0 {
@@ -389,7 +389,7 @@ macro_rules! num_specs {
 
             #[verifier::allow_in_spec]
             #[cfg(not(verus_verify_core))]
-            #[pbt(backend = "bolero")]
+            #[pbt]
             pub assume_specification[<$uN>::saturating_add](x: $uN, y: $uN) -> $uN
                 returns (
                     if x + y > <$uN>::MAX {
@@ -401,7 +401,7 @@ macro_rules! num_specs {
 
             #[verifier::allow_in_spec]
             #[cfg(not(verus_verify_core))]
-            #[pbt(backend = "bolero")]
+            #[pbt]
             pub assume_specification[<$uN>::saturating_sub](x: $uN, y: $uN) -> $uN
                 returns (
                     if x - y < <$uN>::MIN {
@@ -413,7 +413,7 @@ macro_rules! num_specs {
 
             #[verifier::allow_in_spec]
             #[cfg(not(verus_verify_core))]
-            #[pbt(backend = "bolero")]
+            #[pbt]
             pub assume_specification[<$uN>::is_multiple_of](x: $uN, y: $uN) -> bool
                 returns (
                     if y == 0 { x == 0 } else { x % y == 0 }
@@ -441,7 +441,7 @@ macro_rules! num_specs {
             // branches compute truncated division/remainder faithfully.
             #[cfg(not(verus_verify_core))]
             #[verifier::external_body]
-            #[pbt(backend = "bolero")]
+            #[pbt]
             pub fn pbt_checked_div(lhs: $iN, rhs: $iN) -> (ret: Option<$iN>)
                 ensures
                     ret == (if rhs == 0 || (lhs == <$iN>::MIN && rhs == -1) {
@@ -467,7 +467,7 @@ macro_rules! num_specs {
 
             #[cfg(not(verus_verify_core))]
             #[verifier::external_body]
-            #[pbt(backend = "bolero")]
+            #[pbt]
             pub fn pbt_checked_rem(lhs: $iN, rhs: $iN) -> (ret: Option<$iN>)
                 ensures
                     ret == (if rhs == 0 || (lhs == <$iN>::MIN && rhs == -1) {
@@ -489,7 +489,7 @@ macro_rules! num_specs {
                 <$iN>::checked_rem(lhs, rhs)
             }
 
-            #[pbt(backend = "bolero")]
+            #[pbt]
             pub assume_specification[<$iN as Clone>::clone](x: &$iN) -> (res: $iN)
                 ensures res == x;
 
@@ -559,7 +559,7 @@ macro_rules! num_specs {
             // sampling makes `MIN` / `-1` / `0` boundary pairs frequent.
             #[cfg(not(verus_verify_core))]
             #[verifier::external_body]
-            #[pbt(backend = "bolero")]
+            #[pbt]
             pub fn pbt_cmp_eq(x: $iN, y: $iN) -> (ret: bool)
                 ensures ret == (x == y),
             {
@@ -568,7 +568,7 @@ macro_rules! num_specs {
 
             #[cfg(not(verus_verify_core))]
             #[verifier::external_body]
-            #[pbt(backend = "bolero")]
+            #[pbt]
             pub fn pbt_cmp_ne(x: $iN, y: $iN) -> (ret: bool)
                 ensures ret == (x != y),
             {
@@ -577,7 +577,7 @@ macro_rules! num_specs {
 
             #[cfg(not(verus_verify_core))]
             #[verifier::external_body]
-            #[pbt(backend = "bolero")]
+            #[pbt]
             pub fn pbt_cmp_lt(x: $iN, y: $iN) -> (ret: bool)
                 ensures ret == (x < y),
             {
@@ -586,7 +586,7 @@ macro_rules! num_specs {
 
             #[cfg(not(verus_verify_core))]
             #[verifier::external_body]
-            #[pbt(backend = "bolero")]
+            #[pbt]
             pub fn pbt_cmp_le(x: $iN, y: $iN) -> (ret: bool)
                 ensures ret == (x <= y),
             {
@@ -595,7 +595,7 @@ macro_rules! num_specs {
 
             #[cfg(not(verus_verify_core))]
             #[verifier::external_body]
-            #[pbt(backend = "bolero")]
+            #[pbt]
             pub fn pbt_cmp_gt(x: $iN, y: $iN) -> (ret: bool)
                 ensures ret == (x > y),
             {
@@ -604,7 +604,7 @@ macro_rules! num_specs {
 
             #[cfg(not(verus_verify_core))]
             #[verifier::external_body]
-            #[pbt(backend = "bolero")]
+            #[pbt]
             pub fn pbt_cmp_ge(x: $iN, y: $iN) -> (ret: bool)
                 ensures ret == (x >= y),
             {
@@ -614,7 +614,7 @@ macro_rules! num_specs {
             // Mirrors `PartialOrdSpecImpl::partial_cmp_spec` for $iN.
             #[cfg(not(verus_verify_core))]
             #[verifier::external_body]
-            #[pbt(backend = "bolero")]
+            #[pbt]
             pub fn pbt_cmp_partial_cmp(x: $iN, y: $iN) -> (ret: Option<Ordering>)
                 ensures
                     ret == (if x < y {
@@ -631,7 +631,7 @@ macro_rules! num_specs {
             // Mirrors `OrdSpecImpl::cmp_spec` for $iN.
             #[cfg(not(verus_verify_core))]
             #[verifier::external_body]
-            #[pbt(backend = "bolero")]
+            #[pbt]
             pub fn pbt_cmp_cmp(x: $iN, y: $iN) -> (ret: Ordering)
                 ensures
                     ret == (if x < y {
@@ -647,7 +647,7 @@ macro_rules! num_specs {
 
             #[verifier::allow_in_spec]
             #[cfg(not(verus_verify_core))]
-            #[pbt(backend = "bolero")]
+            #[pbt]
             pub assume_specification[<$iN>::wrapping_add](x: $iN, y: $iN) -> $iN
                 returns $mod_i::wrapping_add(x, y)
                 opens_invariants none
@@ -655,7 +655,7 @@ macro_rules! num_specs {
 
             #[verifier::allow_in_spec]
             #[cfg(not(verus_verify_core))]
-            #[pbt(backend = "bolero")]
+            #[pbt]
             pub assume_specification[<$iN>::wrapping_add_unsigned](x: $iN, y: $uN) -> $iN
                 returns $mod_i::wrapping_add_unsigned(x, y)
                 opens_invariants none
@@ -663,7 +663,7 @@ macro_rules! num_specs {
 
             #[verifier::allow_in_spec]
             #[cfg(not(verus_verify_core))]
-            #[pbt(backend = "bolero")]
+            #[pbt]
             pub assume_specification[<$iN>::wrapping_sub](x: $iN, y: $iN) -> $iN
                 returns $mod_i::wrapping_sub(x, y)
                 opens_invariants none
@@ -671,7 +671,7 @@ macro_rules! num_specs {
 
             #[verifier::allow_in_spec]
             #[cfg(not(verus_verify_core))]
-            #[pbt(backend = "bolero")]
+            #[pbt]
             pub assume_specification[<$iN>::wrapping_mul](x: $iN, y: $iN) -> $iN
                 returns $mod_i::wrapping_mul(x, y)
                 opens_invariants none
@@ -679,7 +679,7 @@ macro_rules! num_specs {
 
             #[verifier::allow_in_spec]
             #[cfg(not(verus_verify_core))]
-            #[pbt(backend = "bolero")]
+            #[pbt]
             pub assume_specification[<$iN>::wrapping_shl](x: $iN, rhs: u32) -> $iN
                 returns $mod_i::wrapping_shl(x, rhs)
                 opens_invariants none
@@ -687,7 +687,7 @@ macro_rules! num_specs {
 
             #[verifier::allow_in_spec]
             #[cfg(not(verus_verify_core))]
-            #[pbt(backend = "bolero")]
+            #[pbt]
             pub assume_specification[<$iN>::wrapping_shr](x: $iN, rhs: u32) -> $iN
                 returns $mod_i::wrapping_shr(x, rhs)
                 opens_invariants none
@@ -695,7 +695,7 @@ macro_rules! num_specs {
 
             #[verifier::allow_in_spec]
             #[cfg(not(verus_verify_core))]
-            #[pbt(backend = "bolero")]
+            #[pbt]
             pub assume_specification[<$iN>::checked_add](x: $iN, y: $iN) -> Option<$iN>
                 returns (
                     if x + y > <$iN>::MAX || x + y < <$iN>::MIN {
@@ -707,7 +707,7 @@ macro_rules! num_specs {
 
             #[verifier::allow_in_spec]
             #[cfg(not(verus_verify_core))]
-            #[pbt(backend = "bolero")]
+            #[pbt]
             pub assume_specification[<$iN>::checked_add_unsigned](x: $iN, y: $uN) -> Option<$iN>
                 returns (
                     if x + y > <$iN>::MAX {
@@ -719,7 +719,7 @@ macro_rules! num_specs {
 
             #[verifier::allow_in_spec]
             #[cfg(not(verus_verify_core))]
-            #[pbt(backend = "bolero")]
+            #[pbt]
             pub assume_specification[<$iN>::checked_sub](x: $iN, y: $iN) -> Option<$iN>
                 returns (
                     if x - y > <$iN>::MAX || x - y < <$iN>::MIN {
@@ -731,7 +731,7 @@ macro_rules! num_specs {
 
             #[verifier::allow_in_spec]
             #[cfg(not(verus_verify_core))]
-            #[pbt(backend = "bolero")]
+            #[pbt]
             pub assume_specification[<$iN>::checked_sub_unsigned](x: $iN, y: $uN) -> Option<$iN>
                 returns (
                     if x - y < <$iN>::MIN {
@@ -743,7 +743,7 @@ macro_rules! num_specs {
 
             #[verifier::allow_in_spec]
             #[cfg(not(verus_verify_core))]
-            #[pbt(backend = "bolero")]
+            #[pbt]
             pub assume_specification[<$iN>::checked_mul](x: $iN, y: $iN) -> Option<$iN>
                 returns (
                     if x * y > <$iN>::MAX || x * y < <$iN>::MIN {
@@ -769,7 +769,7 @@ macro_rules! num_specs {
 
             #[verifier::allow_in_spec]
             #[cfg(not(verus_verify_core))]
-            #[pbt(backend = "bolero")]
+            #[pbt]
             pub assume_specification[<$iN>::checked_div_euclid](lhs: $iN, rhs: $iN) -> Option<$iN>
                 returns (
                     if rhs == 0 || (lhs == <$iN>::MIN && rhs == -1) {
@@ -795,7 +795,7 @@ macro_rules! num_specs {
 
             #[verifier::allow_in_spec]
             #[cfg(not(verus_verify_core))]
-            #[pbt(backend = "bolero")]
+            #[pbt]
             pub assume_specification[<$iN>::checked_rem_euclid](lhs: $iN, rhs: $iN) -> Option<$iN>
                 returns (
                     if rhs == 0 || (lhs == <$iN>::MIN && rhs == -1) {

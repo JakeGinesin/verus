@@ -183,14 +183,14 @@ pub assume_specification<'a, T> [<&'a [T] as core::iter::IntoIterator>::into_ite
         IteratorSpec::initial_value_relation(&iter, &iter),
 ;
 
-#[pbt(T = u32, backend = "bolero")]
+#[pbt(T = u32)]
 pub assume_specification<T> [ <[T]>::first ](slice: &[T]) -> (res: Option<&T>)
     ensures
         slice.len() == 0 ==> res.is_none(),
         slice.len() != 0 ==> res.is_some() && res.unwrap() == slice[0]
 ;
 
-#[pbt(T = u32, backend = "bolero")]
+#[pbt(T = u32)]
 pub assume_specification<T> [ <[T]>::last ](slice: &[T]) -> (res: Option<&T>)
     ensures
         slice.len() == 0 ==> res.is_none(),
@@ -213,7 +213,7 @@ pub assume_specification<T> [ <[T]>::last_mut ](slice: &mut [T]) -> (res: Option
             && final(slice)@ == old(slice)@.update(old(slice).len() - 1, *final(res.unwrap()))
 ;
 
-#[pbt(T = u32, backend = "bolero")]
+#[pbt(T = u32)]
 pub assume_specification<T> [ <[T]>::split_at ](slice: &[T], mid: usize) -> (ret: (&[T], &[T]))
     requires
         0 <= mid <= slice.len(),

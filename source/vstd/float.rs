@@ -110,7 +110,7 @@ pub assume_specification[ <f64 as Clone>::clone ](f: &f64) -> (res: f64)
 // faithfully: IEEE-equal, or both NaN.
 #[cfg(not(verus_verify_core))]
 #[verifier::external_body]
-#[pbt(backend = "bolero")]
+#[pbt]
 pub fn pbt_f32_clone(f: f32) -> (ret: bool)
     ensures ret,
 {
@@ -120,7 +120,7 @@ pub fn pbt_f32_clone(f: f32) -> (ret: bool)
 
 #[cfg(not(verus_verify_core))]
 #[verifier::external_body]
-#[pbt(backend = "bolero")]
+#[pbt]
 pub fn pbt_f64_clone(f: f64) -> (ret: bool)
     ensures ret,
 {

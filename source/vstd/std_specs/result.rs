@@ -131,7 +131,7 @@ pub open spec fn is_ok<T, E>(result: &Result<T, E>) -> bool {
     is_variant(result, "Ok")
 }
 
-#[pbt(T = u32, E = u32, backend = "bolero")]
+#[pbt(T = u32, E = u32)]
 #[verifier::when_used_as_spec(is_ok)]
 pub assume_specification<T, E>[ Result::<T, E>::is_ok ](r: &Result<T, E>) -> (b: bool)
     ensures
@@ -145,7 +145,7 @@ pub open spec fn is_err<T, E>(result: &Result<T, E>) -> bool {
     is_variant(result, "Err")
 }
 
-#[pbt(T = u32, E = u32, backend = "bolero")]
+#[pbt(T = u32, E = u32)]
 #[verifier::when_used_as_spec(is_err)]
 pub assume_specification<T, E>[ Result::<T, E>::is_err ](r: &Result<T, E>) -> (b: bool)
     ensures
@@ -154,7 +154,7 @@ pub assume_specification<T, E>[ Result::<T, E>::is_err ](r: &Result<T, E>) -> (b
 ;
 
 // as_ref
-#[pbt(T = u32, E = u32, backend = "bolero")]
+#[pbt(T = u32, E = u32)]
 pub assume_specification<T, E>[ Result::<T, E>::as_ref ](result: &Result<T, E>) -> (r: Result<
     &T,
     &E,
@@ -176,7 +176,7 @@ pub open spec fn spec_unwrap<T, E: core::fmt::Debug>(result: Result<T, E>) -> T
     result->Ok_0
 }
 
-#[pbt(T = u32, E = u32, backend = "bolero")]
+#[pbt(T = u32, E = u32)]
 #[verifier::when_used_as_spec(spec_unwrap)]
 pub assume_specification<T, E: core::fmt::Debug>[ Result::<T, E>::unwrap ](
     result: Result<T, E>,
@@ -196,7 +196,7 @@ pub open spec fn spec_unwrap_err<T: core::fmt::Debug, E>(result: Result<T, E>) -
     result->Err_0
 }
 
-#[pbt(T = u32, E = u32, backend = "bolero")]
+#[pbt(T = u32, E = u32)]
 #[verifier::when_used_as_spec(spec_unwrap_err)]
 pub assume_specification<T: core::fmt::Debug, E>[ Result::<T, E>::unwrap_err ](
     result: Result<T, E>,
@@ -216,7 +216,7 @@ pub open spec fn spec_expect<T, E: core::fmt::Debug>(result: Result<T, E>, msg: 
     result->Ok_0
 }
 
-#[pbt(T = u32, E = u32, backend = "bolero")]
+#[pbt(T = u32, E = u32)]
 #[verifier::when_used_as_spec(spec_expect)]
 pub assume_specification<T, E: core::fmt::Debug>[ Result::<T, E>::expect ](
     result: Result<T, E>,
@@ -264,7 +264,7 @@ pub open spec fn ok<T, E>(result: Result<T, E>) -> Option<T> {
     }
 }
 
-#[pbt(T = u32, E = u32, backend = "bolero")]
+#[pbt(T = u32, E = u32)]
 #[verifier::when_used_as_spec(ok)]
 pub assume_specification<T, E>[ Result::<T, E>::ok ](result: Result<T, E>) -> (opt: Option<T>)
     ensures
@@ -281,7 +281,7 @@ pub open spec fn err<T, E>(result: Result<T, E>) -> Option<E> {
     }
 }
 
-#[pbt(T = u32, E = u32, backend = "bolero")]
+#[pbt(T = u32, E = u32)]
 #[verifier::when_used_as_spec(err)]
 pub assume_specification<T, E>[ Result::<T, E>::err ](result: Result<T, E>) -> (opt: Option<E>)
     ensures

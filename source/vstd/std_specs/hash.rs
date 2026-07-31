@@ -619,7 +619,7 @@ pub assume_specification<Key, Value, S, A: Allocator>[ HashMap::<Key, Value, S, 
 
 #[cfg(not(verus_verify_core))]
 #[verifier::external_body]
-#[pbt(backend = "bolero")]
+#[pbt]
 pub fn pbt_hash_map_insert(m: &mut HashMap<u32, u32>, k: u32, v: u32) -> (result: Option<u32>)
     ensures
         final(m)@ == old(m)@.insert(k, v),
@@ -634,7 +634,7 @@ pub fn pbt_hash_map_insert(m: &mut HashMap<u32, u32>, k: u32, v: u32) -> (result
 
 #[cfg(not(verus_verify_core))]
 #[verifier::external_body]
-#[pbt(backend = "bolero")]
+#[pbt]
 pub fn pbt_hash_map_remove(m: &mut HashMap<u32, u32>, k: u32) -> (result: Option<u32>)
     ensures
         final(m)@ == old(m)@.remove(k),
@@ -649,7 +649,7 @@ pub fn pbt_hash_map_remove(m: &mut HashMap<u32, u32>, k: u32) -> (result: Option
 
 #[cfg(not(verus_verify_core))]
 #[verifier::external_body]
-#[pbt(backend = "bolero")]
+#[pbt]
 pub fn pbt_hash_map_get(m: HashMap<u32, u32>, k: u32) -> (result: Option<u32>)
     ensures
         result == (if m@.contains_key(k) {
@@ -663,7 +663,7 @@ pub fn pbt_hash_map_get(m: HashMap<u32, u32>, k: u32) -> (result: Option<u32>)
 
 #[cfg(not(verus_verify_core))]
 #[verifier::external_body]
-#[pbt(backend = "bolero")]
+#[pbt]
 pub fn pbt_hash_map_contains_key(m: HashMap<u32, u32>, k: u32) -> (result: bool)
     ensures
         result == m@.contains_key(k),
@@ -673,7 +673,7 @@ pub fn pbt_hash_map_contains_key(m: HashMap<u32, u32>, k: u32) -> (result: bool)
 
 #[cfg(not(verus_verify_core))]
 #[verifier::external_body]
-#[pbt(backend = "bolero")]
+#[pbt]
 pub fn pbt_hash_set_insert(m: &mut HashSet<u32>, k: u32) -> (result: bool)
     ensures
         final(m)@ == old(m)@.insert(k),
@@ -684,7 +684,7 @@ pub fn pbt_hash_set_insert(m: &mut HashSet<u32>, k: u32) -> (result: bool)
 
 #[cfg(not(verus_verify_core))]
 #[verifier::external_body]
-#[pbt(backend = "bolero")]
+#[pbt]
 pub fn pbt_hash_set_remove(m: &mut HashSet<u32>, k: u32) -> (result: bool)
     ensures
         final(m)@ == old(m)@.remove(k),
@@ -695,7 +695,7 @@ pub fn pbt_hash_set_remove(m: &mut HashSet<u32>, k: u32) -> (result: bool)
 
 #[cfg(not(verus_verify_core))]
 #[verifier::external_body]
-#[pbt(backend = "bolero")]
+#[pbt]
 pub fn pbt_hash_set_contains(m: HashSet<u32>, k: u32) -> (result: bool)
     ensures
         result == m@.contains(k),
@@ -716,7 +716,7 @@ pub fn pbt_hash_set_contains(m: HashSet<u32>, k: u32) -> (result: bool)
 /// value or `v`, and the map afterwards holds exactly that value at `k`.
 #[cfg(not(verus_verify_core))]
 #[verifier::external_body]
-#[pbt(backend = "bolero")]
+#[pbt]
 pub fn pbt_hash_map_entry_or_insert(m: &mut HashMap<u32, u32>, k: u32, v: u32) -> (ret: u32)
     ensures
         ret == (if old(m)@.contains_key(k) {
@@ -733,7 +733,7 @@ pub fn pbt_hash_map_entry_or_insert(m: &mut HashMap<u32, u32>, k: u32, v: u32) -
 /// returned `&mut` — the map's post-state must reflect the write.
 #[cfg(not(verus_verify_core))]
 #[verifier::external_body]
-#[pbt(backend = "bolero")]
+#[pbt]
 pub fn pbt_hash_map_entry_or_insert_write(m: &mut HashMap<u32, u32>, k: u32, v: u32, v2: u32)
     ensures
         final(m)@ == old(m)@.insert(k, v2),
@@ -748,7 +748,7 @@ pub fn pbt_hash_map_entry_or_insert_write(m: &mut HashMap<u32, u32>, k: u32, v: 
 /// entry's is `Some(unchanged)` → identity `insert`).
 #[cfg(not(verus_verify_core))]
 #[verifier::external_body]
-#[pbt(backend = "bolero")]
+#[pbt]
 pub fn pbt_hash_map_entry_key(m: &mut HashMap<u32, u32>, k: u32) -> (ret: u32)
     ensures
         ret == k,
@@ -762,7 +762,7 @@ pub fn pbt_hash_map_entry_key(m: &mut HashMap<u32, u32>, k: u32) -> (ret: u32)
 // together with `axiom_spec_hash_map_len`): `len == m@.len()`.
 #[cfg(not(verus_verify_core))]
 #[verifier::external_body]
-#[pbt(backend = "bolero")]
+#[pbt]
 pub fn pbt_hash_map_len(m: HashMap<u32, u32>) -> (len: usize)
     ensures
         len == m@.len(),
@@ -770,7 +770,7 @@ pub fn pbt_hash_map_len(m: HashMap<u32, u32>) -> (len: usize)
     HashMap::<u32, u32>::len(&m)
 }
 
-#[pbt(Key = u32, Value = u32, S = RandomState, A = alloc::alloc::Global, backend = "bolero")]
+#[pbt(Key = u32, Value = u32, S = RandomState, A = alloc::alloc::Global)]
 pub assume_specification<Key, Value, S, A: Allocator>[ HashMap::<Key, Value, S, A>::is_empty ](
     m: &HashMap<Key, Value, S, A>,
 ) -> (res: bool)
@@ -1018,7 +1018,7 @@ pub assume_specification<
         },
 ;
 
-#[pbt(Key = u32, Value = u32, S = RandomState, A = alloc::alloc::Global, backend = "bolero")]
+#[pbt(Key = u32, Value = u32, S = RandomState, A = alloc::alloc::Global)]
 pub assume_specification<Key, Value, S, A: Allocator>[ HashMap::<Key, Value, S, A>::clear ](
     m: &mut HashMap<Key, Value, S, A>,
 )
@@ -1176,7 +1176,7 @@ pub assume_specification<Key, S, A: Allocator>[ HashSet::<Key, S, A>::len ](
 // `axiom_spec_hash_set_len` (see `pbt_hash_map_len`).
 #[cfg(not(verus_verify_core))]
 #[verifier::external_body]
-#[pbt(backend = "bolero")]
+#[pbt]
 pub fn pbt_hash_set_len(m: HashSet<u32>) -> (len: usize)
     ensures
         len == m@.len(),
@@ -1184,7 +1184,7 @@ pub fn pbt_hash_set_len(m: HashSet<u32>) -> (len: usize)
     HashSet::<u32>::len(&m)
 }
 
-#[pbt(Key = u32, S = RandomState, A = alloc::alloc::Global, backend = "bolero")]
+#[pbt(Key = u32, S = RandomState, A = alloc::alloc::Global)]
 pub assume_specification<Key, S, A: Allocator>[ HashSet::<Key, S, A>::is_empty ](
     m: &HashSet<Key, S, A>,
 ) -> (res: bool)

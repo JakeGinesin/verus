@@ -104,7 +104,7 @@ pub assume_specification<T>[ VecDeque::<T>::new ]() -> (v: VecDeque<T>)
 // composite claim with `axiom_spec_len` above (`len == v@.len()`).
 #[cfg(not(verus_verify_core))]
 #[verifier::external_body]
-#[pbt(backend = "bolero")]
+#[pbt]
 pub fn pbt_vecdeque_len(v: VecDeque<u32>) -> (len: usize)
     ensures
         len == v@.len(),
@@ -116,7 +116,7 @@ pub fn pbt_vecdeque_len(v: VecDeque<u32>) -> (len: usize)
 // see vec.rs `pbt_*_bounded` for rationale).
 #[cfg(not(verus_verify_core))]
 #[verifier::external_body]
-#[pbt(backend = "bolero")]
+#[pbt]
 pub fn pbt_vecdeque_with_capacity_bounded(capacity: u16) -> (v: VecDeque<u32>)
     ensures
         v@ == Seq::<u32>::empty(),
@@ -126,7 +126,7 @@ pub fn pbt_vecdeque_with_capacity_bounded(capacity: u16) -> (v: VecDeque<u32>)
 
 #[cfg(not(verus_verify_core))]
 #[verifier::external_body]
-#[pbt(backend = "bolero")]
+#[pbt]
 pub fn pbt_vecdeque_reserve_bounded(v: &mut VecDeque<u32>, additional: u16)
     ensures
         final(v)@ == old(v)@,
@@ -158,7 +158,7 @@ pub assume_specification<T, A: Allocator>[ VecDeque::<T, A>::reserve ](
         final(v)@ == old(v)@,
 ;
 
-#[pbt(T = u32, A = alloc::alloc::Global, backend = "bolero")]
+#[pbt(T = u32, A = alloc::alloc::Global)]
 pub assume_specification<T, A: Allocator>[ VecDeque::<T, A>::push_back ](
     v: &mut VecDeque<T, A>,
     value: T,
@@ -167,7 +167,7 @@ pub assume_specification<T, A: Allocator>[ VecDeque::<T, A>::push_back ](
         final(v)@ == old(v)@.push(value),
 ;
 
-#[pbt(T = u32, A = alloc::alloc::Global, backend = "bolero")]
+#[pbt(T = u32, A = alloc::alloc::Global)]
 pub assume_specification<T, A: Allocator>[ VecDeque::<T, A>::push_front ](
     v: &mut VecDeque<T, A>,
     value: T,
@@ -176,7 +176,7 @@ pub assume_specification<T, A: Allocator>[ VecDeque::<T, A>::push_front ](
         final(v)@ == seq![value] + old(v)@,
 ;
 
-#[pbt(T = u32, A = alloc::alloc::Global, backend = "bolero")]
+#[pbt(T = u32, A = alloc::alloc::Global)]
 pub assume_specification<T, A: Allocator>[ VecDeque::<T, A>::pop_back ](
     v: &mut VecDeque<T, A>,
 ) -> (value: Option<T>)
@@ -194,7 +194,7 @@ pub assume_specification<T, A: Allocator>[ VecDeque::<T, A>::pop_back ](
         },
 ;
 
-#[pbt(T = u32, A = alloc::alloc::Global, backend = "bolero")]
+#[pbt(T = u32, A = alloc::alloc::Global)]
 pub assume_specification<T, A: Allocator>[ VecDeque::<T, A>::pop_front ](
     v: &mut VecDeque<T, A>,
 ) -> (value: Option<T>)
@@ -212,7 +212,7 @@ pub assume_specification<T, A: Allocator>[ VecDeque::<T, A>::pop_front ](
         },
 ;
 
-#[pbt(T = u32, A = alloc::alloc::Global, backend = "bolero")]
+#[pbt(T = u32, A = alloc::alloc::Global)]
 pub assume_specification<T, A: Allocator>[ VecDeque::<T, A>::append ](
     v: &mut VecDeque<T, A>,
     other: &mut VecDeque<T, A>,
@@ -222,7 +222,7 @@ pub assume_specification<T, A: Allocator>[ VecDeque::<T, A>::append ](
         final(other)@ == Seq::<T>::empty(),
 ;
 
-#[pbt(T = u32, A = alloc::alloc::Global, backend = "bolero")]
+#[pbt(T = u32, A = alloc::alloc::Global)]
 pub assume_specification<T, A: Allocator>[ VecDeque::<T, A>::insert ](
     v: &mut VecDeque<T, A>,
     i: usize,
@@ -234,7 +234,7 @@ pub assume_specification<T, A: Allocator>[ VecDeque::<T, A>::insert ](
         final(v)@ == old(v)@.insert(i as int, element),
 ;
 
-#[pbt(T = u32, A = alloc::alloc::Global, backend = "bolero")]
+#[pbt(T = u32, A = alloc::alloc::Global)]
 pub assume_specification<T, A: Allocator>[ VecDeque::<T, A>::remove ](
     v: &mut VecDeque<T, A>,
     i: usize,
@@ -253,13 +253,13 @@ pub assume_specification<T, A: Allocator>[ VecDeque::<T, A>::remove ](
         },
 ;
 
-#[pbt(T = u32, A = alloc::alloc::Global, backend = "bolero")]
+#[pbt(T = u32, A = alloc::alloc::Global)]
 pub assume_specification<T, A: Allocator>[ VecDeque::<T, A>::clear ](v: &mut VecDeque<T, A>)
     ensures
         final(v).view() == Seq::<T>::empty(),
 ;
 
-#[pbt(T = u32, A = alloc::alloc::Global, backend = "bolero")]
+#[pbt(T = u32, A = alloc::alloc::Global)]
 pub assume_specification<T, A: Allocator + core::clone::Clone>[ VecDeque::<T, A>::split_off ](
     v: &mut VecDeque<T, A>,
     at: usize,
@@ -288,7 +288,7 @@ pub assume_specification<T: Clone, A: Allocator + Clone>[ <VecDeque<T, A> as Clo
         v@ =~= res@ ==> v@ == res@,
 ;
 
-#[pbt(T = u32, A = alloc::alloc::Global, backend = "bolero")]
+#[pbt(T = u32, A = alloc::alloc::Global)]
 pub assume_specification<T, A: Allocator>[ VecDeque::<T, A>::truncate ](
     v: &mut VecDeque<T, A>,
     len: usize,

@@ -23,13 +23,13 @@ pub fn ex_clone_clone_from<T: Clone>(a: &mut T, b: &T)
 }
 */
 
-#[pbt(backend = "bolero")]
+#[pbt]
 pub assume_specification[ <bool as Clone>::clone ](b: &bool) -> (res: bool)
     returns
         b,
 ;
 
-#[pbt(backend = "bolero")]
+#[pbt]
 pub assume_specification[ <char as Clone>::clone ](c: &char) -> (res: char)
     returns
         c,

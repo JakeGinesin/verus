@@ -254,7 +254,7 @@ pub assume_specification[ <bool as PartialEq<bool>>::eq ](x: &bool, y: &bool) ->
 // wrappers restate that claim (same pattern as std_specs/num.rs).
 #[cfg(not(verus_verify_core))]
 #[verifier::external_body]
-#[pbt(backend = "bolero")]
+#[pbt]
 pub fn pbt_bool_eq(x: bool, y: bool) -> (ret: bool)
     ensures ret == (x == y),
 {
@@ -263,7 +263,7 @@ pub fn pbt_bool_eq(x: bool, y: bool) -> (ret: bool)
 
 #[cfg(not(verus_verify_core))]
 #[verifier::external_body]
-#[pbt(backend = "bolero")]
+#[pbt]
 pub fn pbt_bool_ne(x: bool, y: bool) -> (ret: bool)
     ensures ret == (x != y),
 {

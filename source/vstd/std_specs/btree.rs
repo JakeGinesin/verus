@@ -400,7 +400,7 @@ pub assume_specification<Key, Value, A: Allocator + Clone>[ BTreeMap::<Key, Valu
 
 #[cfg(not(verus_verify_core))]
 #[verifier::external_body]
-#[pbt(backend = "bolero")]
+#[pbt]
 pub fn pbt_btree_map_insert(m: &mut BTreeMap<u32, u32>, k: u32, v: u32) -> (result: Option<u32>)
     ensures
         final(m)@ == old(m)@.insert(k, v),
@@ -415,7 +415,7 @@ pub fn pbt_btree_map_insert(m: &mut BTreeMap<u32, u32>, k: u32, v: u32) -> (resu
 
 #[cfg(not(verus_verify_core))]
 #[verifier::external_body]
-#[pbt(backend = "bolero")]
+#[pbt]
 pub fn pbt_btree_map_remove(m: &mut BTreeMap<u32, u32>, k: u32) -> (result: Option<u32>)
     ensures
         final(m)@ == old(m)@.remove(k),
@@ -430,7 +430,7 @@ pub fn pbt_btree_map_remove(m: &mut BTreeMap<u32, u32>, k: u32) -> (result: Opti
 
 #[cfg(not(verus_verify_core))]
 #[verifier::external_body]
-#[pbt(backend = "bolero")]
+#[pbt]
 pub fn pbt_btree_map_get(m: BTreeMap<u32, u32>, k: u32) -> (result: Option<u32>)
     ensures
         result == (if m@.contains_key(k) {
@@ -444,7 +444,7 @@ pub fn pbt_btree_map_get(m: BTreeMap<u32, u32>, k: u32) -> (result: Option<u32>)
 
 #[cfg(not(verus_verify_core))]
 #[verifier::external_body]
-#[pbt(backend = "bolero")]
+#[pbt]
 pub fn pbt_btree_map_contains_key(m: BTreeMap<u32, u32>, k: u32) -> (result: bool)
     ensures
         result == m@.contains_key(k),
@@ -454,7 +454,7 @@ pub fn pbt_btree_map_contains_key(m: BTreeMap<u32, u32>, k: u32) -> (result: boo
 
 #[cfg(not(verus_verify_core))]
 #[verifier::external_body]
-#[pbt(backend = "bolero")]
+#[pbt]
 pub fn pbt_btree_set_insert(m: &mut BTreeSet<u32>, k: u32) -> (result: bool)
     ensures
         final(m)@ == old(m)@.insert(k),
@@ -465,7 +465,7 @@ pub fn pbt_btree_set_insert(m: &mut BTreeSet<u32>, k: u32) -> (result: bool)
 
 #[cfg(not(verus_verify_core))]
 #[verifier::external_body]
-#[pbt(backend = "bolero")]
+#[pbt]
 pub fn pbt_btree_set_remove(m: &mut BTreeSet<u32>, k: u32) -> (result: bool)
     ensures
         final(m)@ == old(m)@.remove(k),
@@ -476,7 +476,7 @@ pub fn pbt_btree_set_remove(m: &mut BTreeSet<u32>, k: u32) -> (result: bool)
 
 #[cfg(not(verus_verify_core))]
 #[verifier::external_body]
-#[pbt(backend = "bolero")]
+#[pbt]
 pub fn pbt_btree_set_contains(m: BTreeSet<u32>, k: u32) -> (result: bool)
     ensures
         result == m@.contains(k),
@@ -489,7 +489,7 @@ pub fn pbt_btree_set_contains(m: BTreeSet<u32>, k: u32) -> (result: bool)
 // which holds since `key_obeys_cmp_spec::<u32>()` does).
 #[cfg(not(verus_verify_core))]
 #[verifier::external_body]
-#[pbt(backend = "bolero")]
+#[pbt]
 pub fn pbt_btree_map_len(m: BTreeMap<u32, u32>) -> (len: usize)
     ensures
         len == m@.len(),
@@ -497,7 +497,7 @@ pub fn pbt_btree_map_len(m: BTreeMap<u32, u32>) -> (len: usize)
     BTreeMap::<u32, u32>::len(&m)
 }
 
-#[pbt(Key = u32, Value = u32, A = alloc::alloc::Global, backend = "bolero")]
+#[pbt(Key = u32, Value = u32, A = alloc::alloc::Global)]
 pub assume_specification<Key, Value, A: Allocator + Clone>[ BTreeMap::<Key, Value, A>::is_empty ](
     m: &BTreeMap<Key, Value, A>,
 ) -> (res: bool)
@@ -505,7 +505,7 @@ pub assume_specification<Key, Value, A: Allocator + Clone>[ BTreeMap::<Key, Valu
         res == m@.is_empty(),
 ;
 
-#[pbt(K = u32, V = u32, A = alloc::alloc::Global, backend = "bolero")]
+#[pbt(K = u32, V = u32, A = alloc::alloc::Global)]
 pub assume_specification<K: Clone, V: Clone, A: Allocator + Clone>[ <BTreeMap::<
     K,
     V,
@@ -697,7 +697,7 @@ pub assume_specification<
         },
 ;
 
-#[pbt(Key = u32, Value = u32, A = alloc::alloc::Global, backend = "bolero")]
+#[pbt(Key = u32, Value = u32, A = alloc::alloc::Global)]
 pub assume_specification<Key, Value, A: Allocator + Clone>[ BTreeMap::<Key, Value, A>::clear ](
     m: &mut BTreeMap<Key, Value, A>,
 )
@@ -870,7 +870,7 @@ pub assume_specification<Key, A: Allocator + Clone>[ BTreeSet::<Key, A>::len ](
 // and `axiom_spec_btree_set_len` (see `pbt_btree_map_len`).
 #[cfg(not(verus_verify_core))]
 #[verifier::external_body]
-#[pbt(backend = "bolero")]
+#[pbt]
 pub fn pbt_btree_set_len(m: BTreeSet<u32>) -> (len: usize)
     ensures
         len == m@.len(),
@@ -878,7 +878,7 @@ pub fn pbt_btree_set_len(m: BTreeSet<u32>) -> (len: usize)
     BTreeSet::<u32>::len(&m)
 }
 
-#[pbt(Key = u32, A = alloc::alloc::Global, backend = "bolero")]
+#[pbt(Key = u32, A = alloc::alloc::Global)]
 pub assume_specification<Key, A: Allocator + Clone>[ BTreeSet::<Key, A>::is_empty ](
     m: &BTreeSet<Key, A>,
 ) -> (res: bool)
@@ -886,7 +886,7 @@ pub assume_specification<Key, A: Allocator + Clone>[ BTreeSet::<Key, A>::is_empt
         res == m@.is_empty(),
 ;
 
-#[pbt(K = u32, A = alloc::alloc::Global, backend = "bolero")]
+#[pbt(K = u32, A = alloc::alloc::Global)]
 pub assume_specification<K: Clone, A: Allocator + Clone>[ <BTreeSet::<K, A> as Clone>::clone ](
     this: &BTreeSet<K, A>,
 ) -> (other: BTreeSet<K, A>)
@@ -1041,7 +1041,7 @@ pub assume_specification<Key: Borrow<Q> + Ord, A: Allocator + Clone, Q: Ord + ?S
         },
 ;
 
-#[pbt(Key = u32, A = alloc::alloc::Global, backend = "bolero")]
+#[pbt(Key = u32, A = alloc::alloc::Global)]
 pub assume_specification<Key, A: Allocator + Clone>[ BTreeSet::<Key, A>::clear ](
     m: &mut BTreeSet<Key, A>,
 ) where A: Clone

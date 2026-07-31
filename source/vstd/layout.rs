@@ -490,7 +490,7 @@ pub fn pbt_align_properties() -> (ret: bool)
 /// size is `len * size_of::<T>()` and its alignment is the element's.
 #[cfg(not(verus_verify_core))]
 #[verifier::external_body]
-#[pbt(backend = "bolero")]
+#[pbt]
 pub fn pbt_layout_of_slices(x: &[u32]) -> (ret: bool)
     ensures ret,
 {
@@ -502,7 +502,7 @@ pub fn pbt_layout_of_slices(x: &[u32]) -> (ret: bool)
 /// still a todo in the axiom itself).
 #[cfg(not(verus_verify_core))]
 #[verifier::external_body]
-#[pbt(backend = "bolero")]
+#[pbt]
 pub fn pbt_layout_of_str(x: &str) -> (ret: bool)
     ensures ret,
 {
