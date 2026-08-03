@@ -703,6 +703,87 @@ pub fn pbt_hash_set_contains(m: HashSet<u32>, k: u32) -> (result: bool)
     HashSet::<u32>::contains(&m, &k)
 }
 
+/// `HashSet::get` at `Key = Q = u32` (the set's own element equals the probe).
+#[cfg(not(verus_verify_core))]
+#[verifier::external_body]
+#[pbt]
+pub fn pbt_hash_set_get(m: HashSet<u32>, k: u32) -> (ret: bool)
+    ensures
+        ret,
+{
+    m.get(&k).copied() == (if m.contains(&k) { Some(k) } else { None })
+}
+
+/// `HashSet::clear`: post-state contains nothing.
+#[cfg(not(verus_verify_core))]
+#[verifier::external_body]
+#[pbt]
+pub fn pbt_hash_set_clear(m: HashSet<u32>, probe: u32) -> (ret: bool)
+    ensures
+        ret,
+{
+    let mut m = m;
+    m.clear();
+    m.len() == 0 && !m.contains(&probe)
+}
+
+/// `with_capacity` / `reserve` for HashMap/HashSet over a bounded (u16)
+/// size domain (allocation-abort hazard at usize): fresh containers are
+/// empty, reserve preserves contents.
+#[cfg(not(verus_verify_core))]
+#[verifier::external_body]
+#[pbt]
+pub fn pbt_hash_capacity_reserve_bounded(
+    m: HashMap<u32, u32>,
+    s: HashSet<u32>,
+    cap: u16,
+) -> (ret: bool)
+    ensures
+        ret,
+{
+    let fresh_m: HashMap<u32, u32> = HashMap::with_capacity(cap as usize);
+    let fresh_s: HashSet<u32> = HashSet::with_capacity(cap as usize);
+    let (mut m, mut s) = (m, s);
+    let (m0, s0) = (m.clone(), s.clone());
+    m.reserve(cap as usize);
+    s.reserve(cap as usize);
+    fresh_m.is_empty() && fresh_s.is_empty() && m == m0 && s == s0
+}
+
+/// Box-keyed mutator composite (`Key = Box<u32>`, `Q = u32`): covers the
+/// `axiom_maps_box_key_to_value` / `axiom_map_box_key_removed` /
+/// `axiom_set_contains_box` / `axiom_set_box_key_*` special-case axioms —
+/// borrowed-`&u32` probes against boxed keys behave like the plain-keyed
+/// model.
+#[cfg(not(verus_verify_core))]
+#[verifier::external_body]
+#[pbt]
+pub fn pbt_hash_box_key_ops(model: HashMap<u32, u32>, k: u32, v: u32) -> (ret: bool)
+    ensures
+        ret,
+{
+    let mut m: HashMap<Box<u32>, u32> = model.iter().map(|(k, v)| (Box::new(*k), *v)).collect();
+    let mut s: HashSet<Box<u32>> = model.keys().map(|k| Box::new(*k)).collect();
+    let mut expected: HashMap<u32, u32> = model.clone();
+
+    // insert via boxed key
+    m.insert(Box::new(k), v);
+    s.insert(Box::new(k));
+    expected.insert(k, v);
+    let after_insert = m.len() == expected.len()
+        && expected.iter().all(|(ek, ev)| m.get(ek) == Some(ev))
+        && expected.keys().all(|ek| s.contains(ek));
+    // borrowed-&u32 probe and removal
+    let got = m.get(&k) == Some(&v) && m.contains_key(&k) && s.contains(&k);
+    let removed = m.remove(&k) == Some(v) && s.remove(&k);
+    expected.remove(&k);
+    let after_remove = !m.contains_key(&k) && !s.contains(&k)
+        && m.len() == expected.len()
+        && expected.iter().all(|(ek, ev)| m.get(ek) == Some(ev));
+
+    after_insert && got && removed && after_remove
+}
+
 // Composite PBT wrappers for the Entry API (`entry`, `Entry::key`,
 // `Entry::or_insert`, and the Occupied/Vacant machinery behind them).
 // The intermediary Entry objects carry prophetic `final_value()` state
@@ -711,6 +792,106 @@ pub fn pbt_hash_set_contains(m: HashSet<u32>, k: u32) -> (result: bool)
 // the consuming entry method, projected onto the observable value and
 // the map's post-state (at `Key = Value = u32`, where the
 // `obeys_key_model` / `builds_valid_hashers` guards hold).
+
+/// Occupied-entry flows: `entry` on a present key is Occupied; `key`,
+/// `get`, `get_mut` (write-through), `insert` (returns old), `remove`,
+/// `remove_entry`, and `into_mut` all match the map model.
+#[cfg(not(verus_verify_core))]
+#[verifier::external_body]
+#[pbt]
+pub fn pbt_hash_map_occupied_entry_flows(m: HashMap<u32, u32>, k: u32, v: u32, v2: u32) -> (ret: bool)
+    ensures
+        ret,
+{
+    use std::collections::hash_map::Entry::{Occupied, Vacant};
+    let mut base = m;
+    base.insert(k, v);
+
+    // key/get
+    let mut m1 = base.clone();
+    let f1 = match m1.entry(k) {
+        Occupied(o) => *o.key() == k && *o.get() == v,
+        Vacant(_) => false,
+    };
+    // get_mut write-through
+    let mut m2 = base.clone();
+    let f2 = match m2.entry(k) {
+        Occupied(mut o) => {
+            *o.get_mut() = v2;
+            true
+        },
+        Vacant(_) => false,
+    } && m2.get(&k) == Some(&v2);
+    // insert returns the old value
+    let mut m3 = base.clone();
+    let f3 = match m3.entry(k) {
+        Occupied(mut o) => o.insert(v2) == v,
+        Vacant(_) => false,
+    } && m3.get(&k) == Some(&v2);
+    // remove / remove_entry
+    let mut m4 = base.clone();
+    let f4 = match m4.entry(k) {
+        Occupied(o) => o.remove() == v,
+        Vacant(_) => false,
+    } && !m4.contains_key(&k);
+    let mut m5 = base.clone();
+    let f5 = match m5.entry(k) {
+        Occupied(o) => o.remove_entry() == (k, v),
+        Vacant(_) => false,
+    } && !m5.contains_key(&k);
+    // into_mut write-through
+    let mut m6 = base.clone();
+    let f6 = match m6.entry(k) {
+        Occupied(o) => {
+            let r = o.into_mut();
+            let read = *r == v;
+            *r = v2;
+            read
+        },
+        Vacant(_) => false,
+    } && m6.get(&k) == Some(&v2);
+
+    f1 && f2 && f3 && f4 && f5 && f6
+}
+
+/// Vacant-entry flows: `entry` on an absent key is Vacant; `key`,
+/// `into_key`, `insert` (returns a live `&mut` to the inserted value), and
+/// `Entry::insert_entry` all match the map model.
+#[cfg(not(verus_verify_core))]
+#[verifier::external_body]
+#[pbt]
+pub fn pbt_hash_map_vacant_entry_flows(m: HashMap<u32, u32>, k: u32, v: u32, v2: u32) -> (ret: bool)
+    ensures
+        ret,
+{
+    use std::collections::hash_map::Entry::{Occupied, Vacant};
+    let mut base = m;
+    base.remove(&k);
+
+    let mut m1 = base.clone();
+    let f1 = match m1.entry(k) {
+        Vacant(vac) => *vac.key() == k && vac.into_key() == k,
+        Occupied(_) => false,
+    } && !m1.contains_key(&k);
+    let mut m2 = base.clone();
+    let f2 = match m2.entry(k) {
+        Vacant(vac) => {
+            let r = vac.insert(v);
+            let read = *r == v;
+            *r = v2;
+            read
+        },
+        Occupied(_) => false,
+    } && m2.get(&k) == Some(&v2);
+    // Entry::insert_entry (either state): leaves an occupied entry at v
+    let mut m3 = base.clone();
+    let f3 = {
+        let o = m3.entry(k).insert_entry(v);
+        *o.key() == k && *o.get() == v
+    } && m3.get(&k) == Some(&v);
+
+    f1 && f2 && f3
+}
 
 /// `m.entry(k).or_insert(v)`, observed by value: returns the existing
 /// value or `v`, and the map afterwards holds exactly that value at `k`.

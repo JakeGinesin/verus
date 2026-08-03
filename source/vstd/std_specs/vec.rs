@@ -56,6 +56,7 @@ pub struct ExTryReserveError(alloc::collections::TryReserveError);
 // `vec[i]` to this function here from rust_to_vir_expr.
 #[verifier::external_body]
 #[cfg_attr(verus_keep_ghost, rustc_diagnostic_item = "verus::vstd::std_specs::vec::vec_index")]
+#[pbt(T = u32, A = alloc::alloc::Global)]
 pub fn vec_index<T, A: Allocator>(vec: &Vec<T, A>, i: usize) -> (element: &T)
     requires
         i < vec.view().len(),
@@ -149,6 +150,48 @@ pub fn pbt_vec_from_elem_bounded(elem: u32, n: u16) -> (ret: bool)
     let v = alloc::vec::from_elem(elem, n as usize);
     v.len() == n as usize && v.iter().all(|x| *x == elem)
 }
+
+/// `Vec::resize` over the bounded (u16) size domain: truncates or extends
+/// with the fill value.
+#[cfg(not(verus_verify_core))]
+#[verifier::external_body]
+#[pbt]
+pub fn pbt_vec_resize_bounded(vec: Vec<u32>, n: u16, value: u32) -> (ret: bool)
+    ensures ret,
+{
+    let mut v = vec.clone();
+    v.resize(n as usize, value);
+    let n = n as usize;
+    v.len() == n
+        && v[..n.min(vec.len())] == vec[..n.min(vec.len())]
+        && v[n.min(vec.len())..].iter().all(|x| *x == value)
+}
+
+/// `Vec::new_in` at `A = Global` is empty (direct #[pbt] blocked: the
+/// allocator param has no sampling strategy).
+#[cfg(not(verus_verify_core))]
+#[verifier::external_body]
+#[pbt]
+pub fn pbt_vec_new_in_global() -> (ret: bool)
+    ensures ret,
+{
+    let v: Vec<u32> = Vec::new_in(alloc::alloc::Global);
+    v.is_empty()
+}
+
+/// Bare `<Vec as PartialEq>::eq` spec (contract lives in the spec-impl
+/// trait): vec equality is elementwise at `T = U = u32`.
+#[cfg(not(verus_verify_core))]
+#[verifier::external_body]
+#[pbt]
+pub fn pbt_vec_eq(x: Vec<u32>, y: Vec<u32>) -> (ret: bool)
+    ensures ret,
+{
+    (x == y) == (x.len() == y.len() && x.iter().zip(y.iter()).all(|(a, b)| a == b))
+        && x == x
+}
+
+
 
 ////// Other functions
 #[pbt(T = u32)]

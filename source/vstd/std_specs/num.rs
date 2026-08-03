@@ -295,38 +295,26 @@ macro_rules! num_specs {
                     }
                 );
 
-            // PBT wrapper for checked_next_multiple_of: its spec calls
-            // `next_multiple_of` from the file's top-level verus! block —
-            // a different engine expansion, so the sibling fold can't see
-            // it. The wrapper inlines the spec body (`x` when `x % rhs ==
-            // 0`, else `x + (rhs - x % rhs)`, `None` on rhs == 0 or
-            // overflow) in the exact int domain.
-            #[cfg(not(verus_verify_core))]
-            #[verifier::external_body]
-            #[pbt]
-            pub fn pbt_checked_next_multiple_of(x: $uN, rhs: $uN) -> (ret: Option<$uN>)
-                ensures
-                    ret == (if rhs == 0 {
-                        None
-                    } else if (if (x as int) % (rhs as int) == 0 {
-                        x as int
-                    } else {
-                        (x as int) + ((rhs as int) - (x as int) % (rhs as int))
-                    }) > <$uN>::MAX as int {
-                        None::<$uN>
-                    } else {
-                        Some((if (x as int) % (rhs as int) == 0 {
-                            x as int
-                        } else {
-                            (x as int) + ((rhs as int) - (x as int) % (rhs as int))
-                        }) as $uN)
-                    }),
-            {
-                <$uN>::checked_next_multiple_of(x, rhs)
-            }
 
             #[verifier::allow_in_spec]
             #[cfg(not(verus_verify_core))]
+            // Exec twin for `next_multiple_of` (defined in the file's
+            // top-level verus! block — a different engine expansion, so
+            // the sibling fold can't see it). Body mirrors the spec over
+            // SpecInt (euclidean % matching Verus `int` semantics).
+            #[cfg(not(verus_verify_core))]
+            external_pbt_provide! {
+                fn next_multiple_of(x: int, y: int) -> int {
+                    use ::verus_pbt::__pbt_int as bi;
+                    if bi::eq(bi::rem(x.clone(), y.clone()), 0u8) {
+                        x
+                    } else {
+                        bi::add(x.clone(), bi::sub(y.clone(), bi::rem(x, y)))
+                    }
+                }
+            }
+
+            #[pbt]
             pub assume_specification[<$uN>::checked_next_multiple_of](x: $uN, rhs: $uN) -> Option<$uN>
                 returns (
                     if rhs == 0 {
@@ -425,69 +413,7 @@ macro_rules! num_specs {
         mod $mod_i_tmp {
             use super::*;
 
-            // PBT wrapper harnesses for `checked_div` / `checked_rem`.
-            //
-            // Their `assume_specification`s below call the spec fns
-            // `rust_div` / `rust_rem` from `arithmetic::div_mod` — a
-            // different `verus!` block the engine cannot generate exec
-            // companions for (and their `int` params are outside the
-            // exec-stub type universe). Following the convert.rs wrapper
-            // pattern, each wrapper restates the intended contract with
-            // the `rust_div` / `rust_rem` spec body inlined and calls the
-            // real std method; a `#[pbt]` harness fuzzes it (edge-biased,
-            // so `MIN` / `-1` / `0` are hit). The engine's `int`-domain
-            // `/` and `%` are Euclidean, exactly like the Verus spec ops
-            // the inlined body was written against, so the sign-massaging
-            // branches compute truncated division/remainder faithfully.
-            #[cfg(not(verus_verify_core))]
-            #[verifier::external_body]
-            #[pbt]
-            pub fn pbt_checked_div(lhs: $iN, rhs: $iN) -> (ret: Option<$iN>)
-                ensures
-                    ret == (if rhs == 0 || (lhs == <$iN>::MIN && rhs == -1) {
-                        None
-                    } else {
-                        Some((
-                            if lhs as int == 0 {
-                                0 as int
-                            } else if lhs as int > 0 {
-                                (lhs as int) / (rhs as int)
-                            } else {
-                                // `0 - lhs` (not `-lhs`): the engine strips
-                                // `as int` casts and would negate the bare
-                                // primitive (overflow at MIN); binary `-`
-                                // lifts into the exact SpecInt domain.
-                                -((0 - (lhs as int)) / (rhs as int))
-                            }
-                        ) as $iN)
-                    }),
-            {
-                <$iN>::checked_div(lhs, rhs)
-            }
 
-            #[cfg(not(verus_verify_core))]
-            #[verifier::external_body]
-            #[pbt]
-            pub fn pbt_checked_rem(lhs: $iN, rhs: $iN) -> (ret: Option<$iN>)
-                ensures
-                    ret == (if rhs == 0 || (lhs == <$iN>::MIN && rhs == -1) {
-                        None
-                    } else {
-                        Some((
-                            if lhs as int == 0 {
-                                0 as int
-                            } else if lhs as int > 0 {
-                                (lhs as int) % (rhs as int)
-                            } else {
-                                // `0 - lhs` for the same overflow reason as in
-                                // `pbt_checked_div` above.
-                                -((0 - (lhs as int)) % (rhs as int))
-                            }
-                        ) as $iN)
-                    }),
-            {
-                <$iN>::checked_rem(lhs, rhs)
-            }
 
             #[pbt]
             pub assume_specification[<$iN as Clone>::clone](x: &$iN) -> (res: $iN)
@@ -753,11 +679,41 @@ macro_rules! num_specs {
                     }
                 );
 
+            // Exec twins for the cross-module spec fns `rust_div` /
+            // `rust_rem` (arithmetic/div_mod.rs): bodies mirror the spec
+            // definitions exactly, over SpecInt (whose __pbt_int div/rem
+            // are euclidean, matching Verus `int` semantics).
+            #[cfg(not(verus_verify_core))]
+            external_pbt_provide! {
+                fn rust_div(a: int, b: int) -> int {
+                    use ::verus_pbt::__pbt_int as bi;
+                    if bi::eq(a.clone(), 0u8) {
+                        bi::lift(0u8)
+                    } else if bi::gt(a.clone(), 0u8) {
+                        bi::div(a, b)
+                    } else {
+                        bi::neg(bi::div(bi::neg(a), b))
+                    }
+                }
+            }
+
+            #[cfg(not(verus_verify_core))]
+            external_pbt_provide! {
+                fn rust_rem(a: int, b: int) -> int {
+                    use ::verus_pbt::__pbt_int as bi;
+                    if bi::eq(a.clone(), 0u8) {
+                        bi::lift(0u8)
+                    } else if bi::gt(a.clone(), 0u8) {
+                        bi::rem(a, b)
+                    } else {
+                        bi::neg(bi::rem(bi::neg(a), b))
+                    }
+                }
+            }
+
             #[verifier::allow_in_spec]
             #[cfg(not(verus_verify_core))]
-            // No #[pbt] here: the spec body calls the cross-module spec fn
-            // `rust_div`, which the engine cannot reach. Covered instead by
-            // the `pbt_checked_div` wrapper harness above.
+            #[pbt]
             pub assume_specification[<$iN>::checked_div](lhs: $iN, rhs: $iN) -> Option<$iN>
                 returns (
                     if rhs == 0 || (lhs == <$iN>::MIN && rhs == -1) {
@@ -781,9 +737,7 @@ macro_rules! num_specs {
 
             #[verifier::allow_in_spec]
             #[cfg(not(verus_verify_core))]
-            // No #[pbt] here: the spec body calls the cross-module spec fn
-            // `rust_rem`, which the engine cannot reach. Covered instead by
-            // the `pbt_checked_rem` wrapper harness above.
+            #[pbt]
             pub assume_specification[<$iN>::checked_rem](lhs: $iN, rhs: $iN) -> Option<$iN>
                 returns (
                     if rhs == 0 || (lhs == <$iN>::MIN && rhs == -1) {

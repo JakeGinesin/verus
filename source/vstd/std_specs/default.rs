@@ -14,6 +14,7 @@ pub trait ExDefault: Sized {
 macro_rules! assume_default_value {
     ($t:ty, $default_value:expr) => {
         verus! {
+            #[pbt]
             pub assume_specification [ <$t as core::default::Default>::default ]() -> (r: $t)
                 ensures
                     r == $default_value,
@@ -43,11 +44,13 @@ assume_default_value!(usize, 0usize);
 // manually implementation for Option<T>, &str, PhantomData<T>, (U, T), (V, U, T)
 verus! {
 
+#[pbt(T = u32)]
 pub assume_specification<T>[ <Option<T> as core::default::Default>::default ]() -> (r: Option<T>)
     ensures
         r == Option::<T>::None,
 ;
 
+#[pbt]
 pub assume_specification<'a>[ <&'a str as core::default::Default>::default ]() -> (r: &'a str)
     ensures
         r == "",
@@ -79,5 +82,23 @@ pub assume_specification<
         call_ensures(U::default, (), r.1),
         call_ensures(T::default, (), r.2),
 ;
+
+/// `PhantomData::default` (direct #[pbt] blocked: PhantomData is not a
+/// supported return shape). The tuple defaults above stay unannotated
+/// (generic call_ensures), but their composite claim at concrete element
+/// types is pinned here too.
+#[cfg(not(verus_verify_core))]
+#[verifier::external_body]
+#[pbt]
+pub fn pbt_phantom_and_tuple_defaults() -> (ret: bool)
+    ensures
+        ret,
+{
+    let p: core::marker::PhantomData<u32> = core::default::Default::default();
+    let pair: (u32, bool) = core::default::Default::default();
+    let triple: (i8, u64, char) = core::default::Default::default();
+    p == core::marker::PhantomData::<u32> && pair == (0u32, false)
+        && triple == (0i8, 0u64, '\0')
+}
 
 } // verus!

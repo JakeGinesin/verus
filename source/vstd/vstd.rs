@@ -11,24 +11,39 @@
 #![allow(rustdoc::invalid_rust_codeblocks)]
 #![cfg_attr(verus_keep_ghost, feature(atomic_internals))]
 #![cfg_attr(verus_keep_ghost, feature(generic_atomic))]
-#![cfg_attr(verus_keep_ghost, feature(core_intrinsics))]
+// PBT in-place patch: core_intrinsics/freeze/ptr_metadata/nonzero_internals
+// are enabled unconditionally so the un-gated std_specs/{core,nonzero}.rs
+// compile under plain `cargo test` (RUSTC_BOOTSTRAP=1 permits the gates).
+#![allow(internal_features)]
+#![feature(core_intrinsics)]
 #![cfg_attr(any(verus_keep_ghost, feature = "allocator"), feature(allocator_api))]
-#![cfg_attr(verus_keep_ghost, feature(step_trait))]
-#![cfg_attr(verus_keep_ghost, feature(ptr_metadata))]
+// PBT in-place patch: `step_trait` and `try_trait_v2` are enabled
+// unconditionally so the un-gated std_specs/{range,control_flow}.rs
+// compile under plain `cargo test` (RUSTC_BOOTSTRAP=1 permits the
+// gates; see ./.cargo/config.toml).
+#![feature(step_trait)]
+#![feature(try_trait_v2)]
+#![feature(ptr_metadata)]
 // PBT in-place patch: `sized_hierarchy` (PointeeSized) is enabled
 // unconditionally so the un-gated std_specs/{cmp,clone}.rs compile under
 // plain `cargo test` (RUSTC_BOOTSTRAP=1 permits the gate; see
 // ./.cargo/config.toml).
 #![feature(sized_hierarchy)]
-#![cfg_attr(verus_keep_ghost, feature(freeze))]
+#![feature(freeze)]
 // PBT in-place patch: needed by the un-gated std_specs/cmp.rs
 // (`AssertParamIsEq`); unconditional for the same reason as
 // `sized_hierarchy` above.
-#![cfg_attr(verus_keep_ghost, feature(derive_clone_copy_internals))]
+#![feature(derive_clone_copy_internals)]
+// PBT in-place patch: needed by the un-gated std_specs/core.rs
+// (core::marker::Tuple and the ExFn* trait specs' `FnOnce<Args>` syntax).
+#![feature(tuple_trait)]
+#![feature(unboxed_closures)]
 #![feature(derive_eq_internals)]
 #![cfg_attr(verus_keep_ghost, feature(slice_index_methods))]
-#![cfg_attr(all(feature = "alloc", verus_keep_ghost), feature(liballoc_internals))]
-#![cfg_attr(verus_keep_ghost, feature(nonzero_internals))]
+// PBT in-place patch: liballoc_internals unconditional so the un-gated
+// std_specs/alloc.rs compiles under plain `cargo test`.
+#![cfg_attr(feature = "alloc", feature(liballoc_internals))]
+#![feature(nonzero_internals)]
 
 #[cfg(feature = "alloc")]
 extern crate alloc;

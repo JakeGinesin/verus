@@ -375,6 +375,39 @@ pub assume_specification<T: Ord>[ <Option<T> as Ord>::cmp ](
 ) -> core::cmp::Ordering
 ;
 
+// PBT wrapper for the bare `<Option<T> as PartialOrd>::partial_cmp` spec
+// above, mirroring `PartialOrdSpecImpl::partial_cmp_spec` at `T = u32`
+// (total, so always `Some` of the Ord result).
+#[cfg(not(verus_verify_core))]
+#[verifier::external_body]
+#[pbt]
+pub fn pbt_option_partial_cmp(x: Option<u32>, y: Option<u32>) -> (ret: bool)
+    ensures
+        ret,
+{
+    let expected = match (&x, &y) {
+        (None, None) => core::cmp::Ordering::Equal,
+        (None, Some(_)) => core::cmp::Ordering::Less,
+        (Some(_), None) => core::cmp::Ordering::Greater,
+        (Some(a), Some(b)) => a.cmp(b),
+    };
+    x.partial_cmp(&y) == Some(expected)
+}
+
+/// `Option::cloned` / `Option::clone` at `T = u32` (`cloned::<u32>` reduces
+/// to equality; direct #[pbt] blocked by the `&'a T` lifetime param /
+/// `&Option` exec-projection calls in the harness).
+#[cfg(not(verus_verify_core))]
+#[verifier::external_body]
+#[pbt]
+pub fn pbt_option_cloned_clone(opt: Option<u32>) -> (ret: bool)
+    ensures
+        ret,
+{
+    let refd: Option<&u32> = opt.as_ref();
+    refd.cloned() == opt && opt.clone() == opt
+}
+
 // PBT wrapper for the bare `<Option<T> as Ord>::cmp` spec above, mirroring
 // `OrdSpecImpl::cmp_spec` for `T = u32` (`None < Some(_)`, element order on
 // two `Some`s).

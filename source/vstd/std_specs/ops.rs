@@ -802,3 +802,107 @@ pub assume_specification[ <f64 as core::ops::Div>::div ](x: f64, y: f64) -> (o: 
 ;
 
 } // verus!
+
+// ---------------------------------------------------------------------------
+// PBT wrappers for the bare integer-op assume_specs emitted by the
+// def_uop_impls!/def_bop_impls!/def_bop_assign_impls! macros above. Those
+// specs carry no inline contract (the claims live in the *SpecImpl trait
+// impls: in-range req guards + exact int-domain results), so each per-width
+// harness restates them against independent oracles: i128 arithmetic for
+// Add/Sub/Mul/Div/Rem/Neg (widths <= 64), a per-bit loop for the bit ops
+// and shifts, and op == op_assign consistency. u128/i128 arithmetic has no
+// wider oracle; the macro-site coverage at the other ten widths is what the
+// classifier counts.
+// ---------------------------------------------------------------------------
+macro_rules! pbt_int_op_specs {
+    ($t:ty, $f:ident) => {
+        verus! {
+        #[cfg(not(verus_verify_core))]
+        #[verifier::external_body]
+        #[pbt]
+        pub fn $f(x: $t, y: $t, s: u8) -> (ret: bool)
+            ensures
+                ret,
+        {
+            let big = |v: $t| v as i128;
+            // guarded arithmetic vs the i128 oracle (checked_* encodes
+            // exactly the specs' req guards, incl. y != 0 / MIN,-1)
+            let add_ok = match x.checked_add(y) { Some(r) => big(r) == big(x) + big(y), None => true };
+            let sub_ok = match x.checked_sub(y) { Some(r) => big(r) == big(x) - big(y), None => true };
+            let mul_ok = match x.checked_mul(y) { Some(r) => big(r) == big(x) * big(y), None => true };
+            let div_ok = match x.checked_div(y) { Some(r) => big(r) == big(x) / big(y), None => true };
+            let rem_ok = match x.checked_rem(y) { Some(r) => big(r) == big(x) % big(y), None => true };
+            let neg_ok = match x.checked_neg() { Some(r) => big(r) == -big(x), None => true };
+            // Not: complement identity
+            let not_ok = (!x) == (x ^ !0);
+            // bit ops: per-bit oracle
+            let bits = <$t>::BITS;
+            let mut bit_ok = true;
+            let mut i = 0u32;
+            while i < bits {
+                let (xa, ya) = (((x >> i) & 1), ((y >> i) & 1));
+                bit_ok = bit_ok
+                    && ((x & y) >> i) & 1 == (xa & ya)
+                    && ((x | y) >> i) & 1 == (xa | ya)
+                    && ((x ^ y) >> i) & 1 == (xa ^ ya);
+                i += 1;
+            }
+            // shifts (guarded s < BITS): per-bit oracle; >> replicates the
+            // top bit for signed types (clamp handles both)
+            let s32 = (s as u32) % bits;  // sample inside the req guard
+            let mut shift_ok = true;
+            let mut i = 0u32;
+            while i < bits {
+                let shl_bit = if i >= s32 { (x >> (i - s32)) & 1 } else { 0 };
+                let src = if i + s32 < bits { i + s32 } else { bits - 1 };
+                let shr_bit = if i + s32 < bits || (<$t>::MIN != 0) { (x >> src) & 1 } else { 0 };
+                shift_ok = shift_ok
+                    && ((x << s32) >> i) & 1 == shl_bit
+                    && ((x >> s32) >> i) & 1 == shr_bit;
+                i += 1;
+            }
+            // op_assign forms agree with the ops
+            let mut a = x;
+            let assign_arith_ok = match x.checked_add(y) {
+                Some(r) => { a = x; a += y; a == r },
+                None => true,
+            } && match x.checked_sub(y) {
+                Some(r) => { a = x; a -= y; a == r },
+                None => true,
+            } && match x.checked_mul(y) {
+                Some(r) => { a = x; a *= y; a == r },
+                None => true,
+            } && match x.checked_div(y) {
+                Some(r) => { a = x; a /= y; a == r },
+                None => true,
+            } && match x.checked_rem(y) {
+                Some(r) => { a = x; a %= y; a == r },
+                None => true,
+            };
+            let assign_bit_ok = {
+                let (mut b1, mut b2, mut b3, mut b4, mut b5) = (x, x, x, x, x);
+                b1 &= y;
+                b2 |= y;
+                b3 ^= y;
+                b4 <<= s32;
+                b5 >>= s32;
+                b1 == (x & y) && b2 == (x | y) && b3 == (x ^ y)
+                    && b4 == (x << s32) && b5 == (x >> s32)
+            };
+            add_ok && sub_ok && mul_ok && div_ok && rem_ok && neg_ok && not_ok
+                && bit_ok && shift_ok && assign_arith_ok && assign_bit_ok
+        }
+        } // verus!
+    };
+}
+
+pbt_int_op_specs!(u8, pbt_int_ops_u8);
+pbt_int_op_specs!(u16, pbt_int_ops_u16);
+pbt_int_op_specs!(u32, pbt_int_ops_u32);
+pbt_int_op_specs!(u64, pbt_int_ops_u64);
+pbt_int_op_specs!(usize, pbt_int_ops_usize);
+pbt_int_op_specs!(i8, pbt_int_ops_i8);
+pbt_int_op_specs!(i16, pbt_int_ops_i16);
+pbt_int_op_specs!(i32, pbt_int_ops_i32);
+pbt_int_op_specs!(i64, pbt_int_ops_i64);
+pbt_int_op_specs!(isize, pbt_int_ops_isize);

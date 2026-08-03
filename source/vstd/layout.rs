@@ -407,6 +407,24 @@ pub broadcast group group_layout_axioms {
 // re-proved from the body.
 // ---------------------------------------------------------------------------
 
+/// `size_of_val` / `align_of_val` composed with the slice/str layout
+/// axioms (`layout_of_slices`: size is len*size_of::<T>, align is
+/// align_of::<T>; sized types have no pinning axiom, so slices/str are
+/// the evaluable instantiations).
+#[cfg(not(verus_verify_core))]
+#[verifier::external_body]
+#[pbt]
+pub fn pbt_size_align_of_val_slices(v: std::vec::Vec<u32>, s: &str) -> (ret: bool)
+    ensures
+        ret,
+{
+    let slice: &[u32] = v.as_slice();
+    core::mem::size_of_val(slice) == v.len() * core::mem::size_of::<u32>()
+        && core::mem::align_of_val(slice) == core::mem::align_of::<u32>()
+        && core::mem::size_of_val(s) == s.len()
+        && core::mem::align_of_val(s) == 1
+}
+
 /// Executable form of `layout_of_primitives` + `layout_of_unit_tuple`.
 #[cfg(not(verus_verify_core))]
 #[verifier::external_body]

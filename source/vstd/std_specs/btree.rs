@@ -474,6 +474,48 @@ pub fn pbt_btree_set_remove(m: &mut BTreeSet<u32>, k: u32) -> (result: bool)
     BTreeSet::<u32>::remove(m, &k)
 }
 
+/// Box-keyed mutator composite (`Key = Box<u32>`, `Q = u32`): covers the
+/// Box-specialization axioms for the borrowed-key relations (insert/get/
+/// contains/remove with `&u32` probes against boxed keys).
+#[cfg(not(verus_verify_core))]
+#[verifier::external_body]
+#[pbt]
+pub fn pbt_btree_box_key_ops(model: BTreeMap<u32, u32>, k: u32, v: u32) -> (ret: bool)
+    ensures
+        ret,
+{
+    let mut m: BTreeMap<Box<u32>, u32> = model.iter().map(|(k, v)| (Box::new(*k), *v)).collect();
+    let mut s: BTreeSet<Box<u32>> = model.keys().map(|k| Box::new(*k)).collect();
+    let mut expected: BTreeMap<u32, u32> = model.clone();
+
+    m.insert(Box::new(k), v);
+    s.insert(Box::new(k));
+    expected.insert(k, v);
+    let after_insert = m.len() == expected.len()
+        && expected.iter().all(|(ek, ev)| m.get(ek) == Some(ev))
+        && expected.keys().all(|ek| s.contains(ek));
+    let got = m.get(&k) == Some(&v) && m.contains_key(&k) && s.contains(&k)
+        && s.get(&k).map(|b| **b) == Some(k);
+    let removed = m.remove(&k) == Some(v) && s.remove(&k);
+    expected.remove(&k);
+    let after_remove = !m.contains_key(&k) && !s.contains(&k)
+        && m.len() == expected.len()
+        && expected.iter().all(|(ek, ev)| m.get(ek) == Some(ev));
+
+    after_insert && got && removed && after_remove
+}
+
+/// `BTreeSet::get` at `Key = Q = u32` (the set's own element equals the probe).
+#[cfg(not(verus_verify_core))]
+#[verifier::external_body]
+#[pbt]
+pub fn pbt_btree_set_get(m: BTreeSet<u32>, k: u32) -> (ret: bool)
+    ensures
+        ret,
+{
+    m.get(&k).copied() == (if m.contains(&k) { Some(k) } else { None })
+}
+
 #[cfg(not(verus_verify_core))]
 #[verifier::external_body]
 #[pbt]

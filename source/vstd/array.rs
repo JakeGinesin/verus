@@ -135,6 +135,9 @@ pub assume_specification<
 #[verifier::external_body]
 #[verifier::when_used_as_spec(spec_array_as_slice)]
 #[cfg_attr(verus_keep_ghost, rustc_diagnostic_item = "verus::vstd::array::array_as_slice")]
+// (no direct #[pbt]: the first ensures clause compares against the
+// uninterp `spec_array_as_slice` — see pbt_array_as_slice for the
+// evaluable `ar@ == out@` composite.)
 pub fn array_as_slice<T, const N: usize>(ar: &[T; N]) -> (out: &[T])
     ensures
         out == spec_array_as_slice(ar),
@@ -148,6 +151,21 @@ pub assume_specification<T, const N: usize>[ <[T; N]>::as_slice ](ar: &[T; N]) -
     ensures
         ar@ == out@,
 ;
+
+/// `array_as_slice` (vstd exec twin for the unsizing coercion): the
+/// evaluable claim `ar@ == out@` (direct #[pbt] blocked: generic fn items
+/// monomorphize in place, and `spec_array_as_slice` is uninterp).
+#[cfg(not(verus_verify_core))]
+#[verifier::external_body]
+#[pbt]
+pub fn pbt_array_as_slice(a: u32, b: u32, c: u32, d: u32) -> (ret: bool)
+    ensures
+        ret,
+{
+    let ar = [a, b, c, d];
+    let out: &[u32] = array_as_slice(&ar);
+    out.len() == 4 && out == [a, b, c, d]
+}
 
 pub uninterp spec fn spec_array_fill_for_copy_type<T: Copy, const N: usize>(t: T) -> (res: [T; N]);
 
@@ -170,6 +188,38 @@ pub fn array_fill_for_copy_types<T: Copy, const N: usize>(t: T) -> (res: [T; N])
         res == spec_array_fill_for_copy_type::<T, N>(t),
 {
     [t;N]
+}
+
+/// `axiom_spec_array_update` composed with the exec assignment it models
+/// (`arr[i] = t`, which Verus encodes through `spec_array_update`): the
+/// updated array matches the elementwise view update, other slots
+/// unchanged. Checked at `T = u32, N = 4` with a guarded index.
+#[cfg(not(verus_verify_core))]
+#[verifier::external_body]
+#[pbt]
+pub fn pbt_array_update(a: u32, b: u32, c: u32, d: u32, i: u8, t: u32) -> (ret: bool)
+    ensures
+        ret,
+{
+    let old = [a, b, c, d];
+    let i = (i % 4) as usize;  // sample inside the 0 <= i < N guard
+    let mut arr = old;
+    arr[i] = t;
+    (0..4).all(|j| arr[j] == if j == i { t } else { old[j] })
+}
+
+/// `array_fill_for_copy_types` composed with its pinning axiom
+/// (`axiom_spec_array_fill_for_copy_type`: every element equals the fill
+/// value), checked at `T = u32, N = 4`.
+#[cfg(not(verus_verify_core))]
+#[verifier::external_body]
+#[pbt]
+pub fn pbt_array_fill_for_copy_types(t: u32) -> (ret: bool)
+    ensures
+        ret,
+{
+    let res: [u32; 4] = array_fill_for_copy_types(t);
+    res.iter().all(|x| *x == t)
 }
 
 #[pbt_axiom(T = u8, N = 4)]

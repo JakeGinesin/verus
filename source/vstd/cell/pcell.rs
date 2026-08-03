@@ -234,4 +234,68 @@ impl<T: ?Sized> PCell<T> {
     }
 }
 
+// ---------------------------------------------------------------------------
+// PBT composites for the `PCell` tracked-permission API (direct #[pbt]
+// blocked: receivers with permissions coupled through the uninterp `id()`;
+// the coupled pair is constructed via `new`, which pins `perm.value()`).
+// ---------------------------------------------------------------------------
+
+/// `new` + `borrow` + `read`: the cell holds the constructed value.
+#[cfg(not(verus_verify_core))]
+#[verifier::external_body]
+#[pbt]
+pub fn pbt_pcell_new_borrow_read(v: u32) -> (ret: bool)
+    ensures
+        ret,
+{
+    let (p, Tracked(perm)) = PCell::<u32>::new(v);
+    *p.borrow(Tracked(&perm)) == v && p.read(Tracked(&perm)) == v
+}
+
+/// `replace` + `write`: replace returns the old value; write overwrites.
+#[cfg(not(verus_verify_core))]
+#[verifier::external_body]
+#[pbt]
+pub fn pbt_pcell_replace_write(v: u32, v2: u32, v3: u32) -> (ret: bool)
+    ensures
+        ret,
+{
+    let (p, Tracked(mut perm)) = PCell::<u32>::new(v);
+    let old_v = p.replace(Tracked(&mut perm), v2);
+    let after_replace = *p.borrow(Tracked(&perm));
+    p.write(Tracked(&mut perm), v3);
+    old_v == v && after_replace == v2 && *p.borrow(Tracked(&perm)) == v3
+}
+
+/// `borrow_mut`: reads the current value and writes through.
+#[cfg(not(verus_verify_core))]
+#[verifier::external_body]
+#[pbt]
+pub fn pbt_pcell_borrow_mut(v: u32, v2: u32) -> (ret: bool)
+    ensures
+        ret,
+{
+    let (p, Tracked(mut perm)) = PCell::<u32>::new(v);
+    let read_ok = {
+        let r = p.borrow_mut(Tracked(&mut perm));
+        let ok = *r == v;
+        *r = v2;
+        ok
+    };
+    read_ok && *p.borrow(Tracked(&perm)) == v2
+}
+
+/// `into_inner`: consumes the cell and its (internally constructed, owned)
+/// permission, returning the held value.
+#[cfg(not(verus_verify_core))]
+#[verifier::external_body]
+#[pbt]
+pub fn pbt_pcell_into_inner(v: u32) -> (ret: bool)
+    ensures
+        ret,
+{
+    let (p, Tracked(perm)) = PCell::<u32>::new(v);
+    p.into_inner(Tracked(perm)) == v
+}
+
 }

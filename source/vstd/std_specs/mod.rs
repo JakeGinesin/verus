@@ -5,7 +5,9 @@
 // generic_atomic, etc.) stay gated on `verus_keep_ghost`. The rest
 // are un-gated so `#[pbt]` annotations on `assume_specification`
 // items inside can fire under regular `cargo test`.
-#[cfg(all(feature = "alloc", verus_keep_ghost))]
+// alloc is un-gated for PBT (the liballoc-internal box-init specs;
+// needs feature(liballoc_internals), enabled in vstd.rs).
+#[cfg(feature = "alloc")]
 pub mod alloc;
 
 #[cfg(verus_keep_ghost)]
@@ -18,12 +20,15 @@ pub mod char;
 // comparison specs; needs feature(sized_hierarchy), enabled in vstd.rs).
 pub mod clone;
 pub mod cmp;
-#[cfg(verus_keep_ghost)]
+// control_flow is un-gated for PBT (Result/Option branch and
+// from_residual specs; needs feature(try_trait_v2), enabled in vstd.rs).
 pub mod control_flow;
 pub mod convert;
-#[cfg(verus_keep_ghost)]
+// core is un-gated for PBT (mem::swap, likely/unlikely specs; needs
+// feature(freeze)/feature(ptr_metadata)/feature(core_intrinsics),
+// enabled in vstd.rs).
 pub mod core;
-#[cfg(verus_keep_ghost)]
+// default is un-gated for PBT (the per-primitive Default::default specs).
 pub mod default;
 #[cfg(verus_keep_ghost)]
 pub mod iter;
@@ -40,7 +45,10 @@ pub mod hash;
 
 pub mod num;
 pub mod option;
-#[cfg(verus_keep_ghost)]
+// range is un-gated for PBT (contains/next/RangeBounds specs and the
+// trusted spec_range_next admits; needs feature(step_trait), enabled in
+// vstd.rs). Items referencing the still-gated iter.rs spec traits
+// (StepSpecImpl, IteratorSpecImpl) are gated per-item inside.
 pub mod range;
 pub mod result;
 
@@ -56,7 +64,8 @@ pub mod vec;
 #[cfg(feature = "alloc")]
 pub mod vecdeque;
 
-#[cfg(all(feature = "alloc", verus_keep_ghost))]
+// smart_ptrs is un-gated for PBT (Box/Rc/Arc constructor and unwrap specs).
+#[cfg(feature = "alloc")]
 pub mod smart_ptrs;
 
 #[cfg(feature = "nonzero_internals")]

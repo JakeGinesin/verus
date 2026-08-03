@@ -174,4 +174,96 @@ pub broadcast group group_nonzero_axioms {
     axiom_nonzero_is_not_zero,
 }
 
+// ---------------------------------------------------------------------------
+// Composite PBT wrappers. NonZero's view is uninterp, so contracts are
+// checked by pinning the view through `new` (whose ensures ties view to the
+// input primitive) and probing with `get` (when_used_as_spec of the view).
+// ---------------------------------------------------------------------------
+
+/// `NonZero::new` + `get`: Some(nz) with nz.get() == n iff n != 0.
+#[cfg(not(verus_verify_core))]
+#[verifier::external_body]
+#[pbt]
+pub fn pbt_nonzero_new_get(n: u32) -> (ret: bool)
+    ensures
+        ret,
+{
+    match NonZero::<u32>::new(n) {
+        Some(nz) => n != 0 && nz.get() == n,
+        None => n == 0,
+    }
+}
+
+/// `NonZero::new_unchecked` (guarded on the requires): get() == n.
+#[cfg(not(verus_verify_core))]
+#[verifier::external_body]
+#[pbt]
+pub fn pbt_nonzero_new_unchecked(n: u32) -> (ret: bool)
+    ensures
+        ret,
+{
+    if n == 0 {
+        true  // precondition excluded
+    } else {
+        unsafe { NonZero::<u32>::new_unchecked(n) }.get() == n
+    }
+}
+
+/// `NonZero as Clone`: clone returns the same value (`returns nz`).
+#[cfg(not(verus_verify_core))]
+#[verifier::external_body]
+#[pbt]
+pub fn pbt_nonzero_clone(n: u32) -> (ret: bool)
+    ensures
+        ret,
+{
+    if n == 0 {
+        true
+    } else {
+        let nz = NonZero::<u32>::new(n).unwrap();
+        nz.clone() == nz && nz.clone().get() == n
+    }
+}
+
+/// PartialEq/PartialOrd spec impls: NonZero comparisons agree with the
+/// underlying primitive's (obeys_* guards hold at u32).
+#[cfg(not(verus_verify_core))]
+#[verifier::external_body]
+#[pbt]
+pub fn pbt_nonzero_eq_cmp(a: u32, b: u32) -> (ret: bool)
+    ensures
+        ret,
+{
+    if a == 0 || b == 0 {
+        true
+    } else {
+        let (x, y) = (NonZero::<u32>::new(a).unwrap(), NonZero::<u32>::new(b).unwrap());
+        (x == y) == (a == b) && x.partial_cmp(&y) == a.partial_cmp(&b)
+    }
+}
+
+/// BitOr spec impls: `nz | m` and `nz | nz2` agree with primitive `|`
+/// (composed with the trusted `nonzero_from_primitive` view axioms).
+#[cfg(not(verus_verify_core))]
+#[verifier::external_body]
+#[pbt]
+pub fn pbt_nonzero_bitor(a: u32, b: u32) -> (ret: bool)
+    ensures
+        ret,
+{
+    if a == 0 {
+        true
+    } else {
+        let x = NonZero::<u32>::new(a).unwrap();
+        let prim_ok = (x | b).get() == (a | b);
+        let both_ok = if b != 0 {
+            let y = NonZero::<u32>::new(b).unwrap();
+            (x | y).get() == (a | b)
+        } else {
+            true
+        };
+        prim_ok && both_ok
+    }
+}
+
 } // verus!

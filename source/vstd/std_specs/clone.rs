@@ -43,6 +43,21 @@ pub assume_specification<'b, T: core::marker::PointeeSized, 'a>[ <&'b T as Clone
         res == b,
 ;
 
+/// Shared-ref clone returns the same referent (direct #[pbt] blocked by the
+/// nested `&&T` param, which has no sampling strategy).
+#[cfg(not(verus_verify_core))]
+#[verifier::external_body]
+#[allow(suspicious_double_ref_op)]
+#[pbt]
+pub fn pbt_ref_clone(v: u32) -> (ret: bool)
+    ensures
+        ret,
+{
+    let r = &v;
+    let cloned: &u32 = Clone::clone(&r);
+    core::ptr::eq(cloned, r) && *cloned == v
+}
+
 // (no #[pbt]: the quantified ensures uses an untyped binder (`forall|i|`),
 // which the engine's quantifier lowering requires to be typed)
 pub assume_specification<T: Clone, const N: usize>[ <[T; N] as Clone>::clone ](a: &[T; N]) -> (res:

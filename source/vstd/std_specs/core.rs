@@ -137,6 +137,7 @@ pub trait ExMetaSized {
     type ExternalTraitSpecificationFor: core::marker::MetaSized;
 }
 
+#[pbt(T = u32)]
 pub assume_specification<T>[ core::mem::swap::<T> ](a: &mut T, b: &mut T)
     ensures
         *final(a) == *old(b),
@@ -170,11 +171,13 @@ pub struct ExDuration(core::time::Duration);
 #[verifier::accept_recursive_types(V)]
 pub struct ExPhantomData<V: PointeeSized>(core::marker::PhantomData<V>);
 
+#[pbt]
 pub assume_specification[ core::intrinsics::likely ](b: bool) -> (c: bool)
     ensures
         c == b,
 ;
 
+#[pbt]
 pub assume_specification[ core::intrinsics::unlikely ](b: bool) -> (c: bool)
     ensures
         c == b,
@@ -191,6 +194,9 @@ pub assume_specification<T, F: FnOnce() -> T>[ bool::then ](b: bool, f: F) -> (r
 
 } // verus!
 
+// PBT in-place patch: this item sits outside the verus! block, so its
+// `#[verifier::*]` tool attributes only resolve under verus builds.
+#[cfg(verus_keep_ghost)]
 #[verifier::external_type_specification]
 #[verifier::external_body]
 #[verifier::accept_recursive_types(T)]

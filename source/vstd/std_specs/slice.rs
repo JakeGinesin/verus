@@ -291,6 +291,65 @@ pub assume_specification<T: Copy, R: core::ops::RangeBounds<usize>>[ <[T]>::copy
         ),
 ;
 
+// ---------------------------------------------------------------------------
+// PBT wrappers for the guarded slice ops (direct #[pbt] blocked: &mut [T]
+// params / ref-pair returns; guards discharged by filtering, owned Vec
+// materialization for the halves).
+// ---------------------------------------------------------------------------
+
+/// `split_at_checked`: Some of the two subranges iff `mid <= len`.
+#[cfg(not(verus_verify_core))]
+#[verifier::external_body]
+#[pbt]
+pub fn pbt_slice_split_at_checked(v: Vec<u32>, mid: u16) -> (ret: bool)
+    ensures
+        ret,
+{
+    let mid = mid as usize;
+    match v.split_at_checked(mid) {
+        Some((a, b)) => mid <= v.len() && a == &v[..mid] && b == &v[mid..],
+        None => mid > v.len(),
+    }
+}
+
+/// `copy_from_slice` (equal-length guard): dst becomes src.
+#[cfg(not(verus_verify_core))]
+#[verifier::external_body]
+#[pbt]
+pub fn pbt_slice_copy_from_slice(dst: Vec<u32>, src: Vec<u32>) -> (ret: bool)
+    ensures
+        ret,
+{
+    if dst.len() != src.len() {
+        return true;  // precondition excluded
+    }
+    let mut dst = dst;
+    dst.copy_from_slice(&src);
+    dst == src
+}
+
+/// `copy_within` at `R = Range<usize>` (validity guards discharged by
+/// filtering), checked against `copy_within_result`'s element formula.
+#[cfg(not(verus_verify_core))]
+#[verifier::external_body]
+#[pbt]
+pub fn pbt_slice_copy_within(v: Vec<u32>, start: u16, end: u16, dest: u16) -> (ret: bool)
+    ensures
+        ret,
+{
+    let (start, end, dest) = (start as usize, end as usize, dest as usize);
+    if !(start <= end && end <= v.len()) || dest + (end - start) > v.len() {
+        return true;  // precondition excluded
+    }
+    let mut r = v.clone();
+    r.copy_within(start..end, dest);
+    let count = end - start;
+    (0..v.len()).all(|i| {
+        let expected = if dest <= i && i < dest + count { v[start + (i - dest)] } else { v[i] };
+        r[i] == expected
+    })
+}
+
 pub broadcast group group_slice_axioms {
     axiom_spec_slice_iter,
 }

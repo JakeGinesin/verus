@@ -1,6 +1,9 @@
 use super::super::prelude::*;
 use super::super::view::View;
 use super::cmp::{PartialOrdIs, PartialOrdSpec};
+// PBT in-place patch: std_specs::iter is still ghost-gated, so the items
+// below that implement / reference its spec traits are gated per-item.
+#[cfg(verus_keep_ghost)]
 use super::iter::{IteratorSpec, StepSpec, StepSpecImpl};
 use core::ops::{
     Bound, Range, RangeBounds, RangeFrom, RangeFull, RangeInclusive, RangeTo, RangeToInclusive,
@@ -114,6 +117,7 @@ pub assume_specification<Idx>[ RangeInclusive::<Idx>::new ](start: Idx, end: Idx
         ret == spec_range_inclusive_new(start, end),
 ;
 
+#[cfg(verus_keep_ghost)]
 impl<A: core::iter::Step> super::iter::IteratorSpecImpl for Range<A> {
     open spec fn obeys_prophetic_iter_laws(&self) -> bool {
         true
@@ -170,6 +174,7 @@ impl<A: core::iter::Step> super::iter::IteratorSpecImpl for Range<A> {
     }
 }
 
+#[cfg(verus_keep_ghost)]
 impl<A: core::iter::Step> super::iter::IteratorSpecImpl for RangeInclusive<A> {
     open spec fn obeys_prophetic_iter_laws(&self) -> bool {
         true
@@ -568,6 +573,9 @@ pub open spec fn slice_range_valid<R: RangeBoundsSpec<usize>>(range: &R, len: na
 macro_rules! step_specs {
     ($t: ty, $axiom: ident) => {
         verus! {
+        // PBT in-place patch: StepSpecImpl lives in the ghost-gated
+        // std_specs::iter, so the spec impl is ghost-only.
+        #[cfg(verus_keep_ghost)]
         impl StepSpecImpl for $t {
             open spec fn spec_is_lt(self, other: Self) -> bool {
                 self < other
@@ -655,4 +663,226 @@ pub broadcast group group_range_axioms {
     axiom_spec_range_inclusive_new,
 }
 
+// ---------------------------------------------------------------------------
+// Composite PBT wrappers. `contains` guards through obeys_partial_cmp_spec
+// (checked at Idx = U = u32, where the spec-impl guard holds),
+// `RangeInclusive` contracts route through its uninterp view (pinned via
+// fresh construction + axiom_spec_range_inclusive_new, exhausted = false),
+// and the RangeBounds specs compare against spec_bound projections. The
+// pbt_range_next_specs! wrappers below check the per-width trusted admits
+// (axiom_spec_range_next_*) composed with the `<Range as Iterator>::next`
+// assume_specification.
+// ---------------------------------------------------------------------------
+
+/// `Range::contains` == `start <= i && i < end` (obeys_contains holds at u32).
+#[cfg(not(verus_verify_core))]
+#[verifier::external_body]
+#[pbt]
+pub fn pbt_range_contains(start: u32, end: u32, i: u32) -> (ret: bool)
+    ensures
+        ret,
+{
+    (start..end).contains(&i) == (start <= i && i < end)
+}
+
+/// `RangeInclusive::new` + view axiom + `contains`: a fresh (non-exhausted)
+/// inclusive range contains `i` iff `start <= i <= end`.
+#[cfg(not(verus_verify_core))]
+#[verifier::external_body]
+#[pbt]
+pub fn pbt_range_inclusive_new_contains(start: u32, end: u32, i: u32) -> (ret: bool)
+    ensures
+        ret,
+{
+    RangeInclusive::new(start, end).contains(&i) == (start <= i && i <= end)
+}
+
+/// `Range` RangeBounds: Included(start) / Excluded(end).
+#[cfg(not(verus_verify_core))]
+#[verifier::external_body]
+#[pbt]
+pub fn pbt_range_bounds(start: u32, end: u32) -> (ret: bool)
+    ensures
+        ret,
+{
+    let r = start..end;
+    matches!(RangeBounds::<u32>::start_bound(&r), Bound::Included(&s) if s == start)
+        && matches!(RangeBounds::<u32>::end_bound(&r), Bound::Excluded(&e) if e == end)
+}
+
+/// `RangeFull` RangeBounds: Unbounded / Unbounded.
+#[cfg(not(verus_verify_core))]
+#[verifier::external_body]
+#[pbt]
+pub fn pbt_range_full_bounds() -> (ret: bool)
+    ensures
+        ret,
+{
+    matches!(RangeBounds::<u32>::start_bound(&(..)), Bound::Unbounded)
+        && matches!(RangeBounds::<u32>::end_bound(&(..)), Bound::Unbounded)
+}
+
+/// `RangeFrom` RangeBounds: Included(start) / Unbounded.
+#[cfg(not(verus_verify_core))]
+#[verifier::external_body]
+#[pbt]
+pub fn pbt_range_from_bounds(start: u32) -> (ret: bool)
+    ensures
+        ret,
+{
+    let r = start..;
+    matches!(RangeBounds::<u32>::start_bound(&r), Bound::Included(&s) if s == start)
+        && matches!(RangeBounds::<u32>::end_bound(&r), Bound::Unbounded)
+}
+
+/// `RangeTo` RangeBounds: Unbounded / Excluded(end).
+#[cfg(not(verus_verify_core))]
+#[verifier::external_body]
+#[pbt]
+pub fn pbt_range_to_bounds(end: u32) -> (ret: bool)
+    ensures
+        ret,
+{
+    let r = ..end;
+    matches!(RangeBounds::<u32>::start_bound(&r), Bound::Unbounded)
+        && matches!(RangeBounds::<u32>::end_bound(&r), Bound::Excluded(&e) if e == end)
+}
+
+/// Exhausted `RangeInclusive`: the `contains` spec's exhausted branch
+/// (`i.is_lt(&end)`) and `start_bound` (unchanged by exhaustion) both match
+/// std. NOTE: the `end_bound` assume_spec does NOT hold for exhausted
+/// ranges (std switches to `Excluded(&end)`, the spec claims `Included`
+/// unconditionally) — deliberately not encoded as a harness; see
+/// verus-pbt/repros/vstd_range_inclusive_end_bound.
+#[cfg(not(verus_verify_core))]
+#[verifier::external_body]
+#[pbt]
+pub fn pbt_range_inclusive_exhausted_contains(start: u8, end: u8, i: u8) -> (ret: bool)
+    ensures
+        ret,
+{
+    let mut r = RangeInclusive::new(start, end);
+    while r.next().is_some() {}
+    // r is now exhausted with r.start() == r.end() (when start <= end) or
+    // untouched (when start > end, already empty). Either way the spec's
+    // exhausted/empty semantics reduce to "contains nothing".
+    let (s, e) = (*r.start(), *r.end());
+    r.contains(&i) == (s <= i && i < e)
+        && matches!(RangeBounds::<u8>::start_bound(&r), Bound::Included(&b) if b == s)
+}
+
+/// `RangeInclusive` `end_bound` restated on a possibly-exhausted range: the
+/// assume_spec claims the result is `Included(&range@.end)` unconditionally.
+/// FAILS against real std (Excluded once exhausted); see
+/// verus-pbt/repros/vstd_range_inclusive_end_bound.
+#[cfg(not(verus_verify_core))]
+#[verifier::external_body]
+#[pbt]
+pub fn pbt_range_inclusive_end_bound_exhausted(start: u8, end: u8) -> (ret: bool)
+    ensures
+        ret,
+{
+    let mut r = RangeInclusive::new(start, end);
+    while r.next().is_some() {}
+    let e = *r.end();
+    matches!(RangeBounds::<u8>::end_bound(&r), Bound::Included(&b) if b == e)
+}
+
+/// `RangeInclusive` RangeBounds (fresh construction pins the view):
+/// Included(start) / Included(end).
+#[cfg(not(verus_verify_core))]
+#[verifier::external_body]
+#[pbt]
+pub fn pbt_range_inclusive_bounds(start: u32, end: u32) -> (ret: bool)
+    ensures
+        ret,
+{
+    let r = RangeInclusive::new(start, end);
+    matches!(RangeBounds::<u32>::start_bound(&r), Bound::Included(&s) if s == start)
+        && matches!(RangeBounds::<u32>::end_bound(&r), Bound::Included(&e) if e == end)
+}
+
+/// `RangeToInclusive` RangeBounds: Unbounded / Included(end).
+#[cfg(not(verus_verify_core))]
+#[verifier::external_body]
+#[pbt]
+pub fn pbt_range_to_inclusive_bounds(end: u32) -> (ret: bool)
+    ensures
+        ret,
+{
+    let r = ..=end;
+    matches!(RangeBounds::<u32>::start_bound(&r), Bound::Unbounded)
+        && matches!(RangeBounds::<u32>::end_bound(&r), Bound::Included(&e) if e == end)
+}
+
+/// `(Bound<T>, Bound<T>)` RangeBounds: each side projects its component
+/// (bounds constructed from sampled selectors — `Bound` itself has no
+/// sampling strategy).
+#[cfg(not(verus_verify_core))]
+#[verifier::external_body]
+#[pbt]
+pub fn pbt_bound_pair_bounds(a: u32, b: u32, sel_a: u8, sel_b: u8) -> (ret: bool)
+    ensures
+        ret,
+{
+    let mk = |v: u32, sel: u8| match sel % 3 {
+        0 => Bound::Included(v),
+        1 => Bound::Excluded(v),
+        _ => Bound::Unbounded,
+    };
+    let pair = (mk(a, sel_a), mk(b, sel_b));
+    let start_ok = match (RangeBounds::<u32>::start_bound(&pair), &pair.0) {
+        (Bound::Included(x), Bound::Included(y)) => x == y,
+        (Bound::Excluded(x), Bound::Excluded(y)) => x == y,
+        (Bound::Unbounded, Bound::Unbounded) => true,
+        _ => false,
+    };
+    let end_ok = match (RangeBounds::<u32>::end_bound(&pair), &pair.1) {
+        (Bound::Included(x), Bound::Included(y)) => x == y,
+        (Bound::Excluded(x), Bound::Excluded(y)) => x == y,
+        (Bound::Unbounded, Bound::Unbounded) => true,
+        _ => false,
+    };
+    start_ok && end_ok
+}
+
 } // verus!
+
+// Per-width composite checks of the trusted `axiom_spec_range_next_*` admits
+// with the `<Range<A> as Iterator>::next` assume_specification: if
+// `start < end`, `next()` yields `start` and advances `start` by one;
+// otherwise it yields `None` and leaves the range unchanged.
+macro_rules! pbt_range_next_specs {
+    ($t: ty, $f: ident) => {
+        verus! {
+        #[cfg(not(verus_verify_core))]
+        #[verifier::external_body]
+        #[pbt]
+        pub fn $f(start: $t, end: $t) -> (ret: bool)
+            ensures
+                ret,
+        {
+            let mut r = start..end;
+            let out = r.next();
+            if start < end {
+                out == Some(start) && r.start == start + 1 && r.end == end
+            } else {
+                out == None && r.start == start && r.end == end
+            }
+        }
+        } // verus!
+    };
+}
+
+pbt_range_next_specs!(u8, pbt_range_next_u8);
+pbt_range_next_specs!(u16, pbt_range_next_u16);
+pbt_range_next_specs!(u32, pbt_range_next_u32);
+pbt_range_next_specs!(u64, pbt_range_next_u64);
+pbt_range_next_specs!(u128, pbt_range_next_u128);
+pbt_range_next_specs!(usize, pbt_range_next_usize);
+pbt_range_next_specs!(i8, pbt_range_next_i8);
+pbt_range_next_specs!(i16, pbt_range_next_i16);
+pbt_range_next_specs!(i32, pbt_range_next_i32);
+pbt_range_next_specs!(i64, pbt_range_next_i64);
+pbt_range_next_specs!(i128, pbt_range_next_i128);
+pbt_range_next_specs!(isize, pbt_range_next_isize);

@@ -51,6 +51,36 @@ pub assume_specification<T: ?Sized>[ <ManuallyDrop<T> as Deref>::deref ](
         m.view_ref(),
 ;
 
+// ---------------------------------------------------------------------------
+// PBT wrappers (direct #[pbt] blocked: ManuallyDrop params/returns have no
+// sampling strategy, and the contracts compare through the view/`cloned`).
+// The view is pinned through `new` (whose ensures ties `res@` to the input).
+// ---------------------------------------------------------------------------
+
+/// `new` + `into_inner` round-trip, plus `deref` observation.
+#[cfg(not(verus_verify_core))]
+#[verifier::external_body]
+#[pbt]
+pub fn pbt_manually_drop_new_into_inner_deref(v: u32) -> (ret: bool)
+    ensures
+        ret,
+{
+    let m = ManuallyDrop::new(v);
+    *m == v && ManuallyDrop::into_inner(m) == v
+}
+
+/// `clone` (via `cloned`, identity at u32): view preserved.
+#[cfg(not(verus_verify_core))]
+#[verifier::external_body]
+#[pbt]
+pub fn pbt_manually_drop_clone(v: u32) -> (ret: bool)
+    ensures
+        ret,
+{
+    let m = ManuallyDrop::new(v);
+    *m.clone() == v
+}
+
 pub broadcast axiom fn axiom_manually_drop_has_resolved<T: ?Sized>(m: &ManuallyDrop<T>)
     ensures
         #[trigger] has_resolved_unsized::<ManuallyDrop<T>>(m) ==> has_resolved_unsized::<T>(

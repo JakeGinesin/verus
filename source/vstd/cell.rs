@@ -390,4 +390,74 @@ impl<T: Copy> InvCell<T> {
     }
 }
 
+// ---------------------------------------------------------------------------
+// PBT composites for the (deprecated) `PCell` tracked-permission API.
+// Direct #[pbt] is blocked: the methods are receivers on `PCell` with
+// permissions coupled via the uninterp `id()` / `pcell_points!` map views,
+// so each wrapper constructs the coupled (cell, permission) pair through
+// `new`/`empty` and restates the contracts as value round-trips.
+// ---------------------------------------------------------------------------
+
+/// `empty` + `put` + `take`: put initializes, take moves the value out.
+#[cfg(not(verus_verify_core))]
+#[allow(deprecated)]
+#[verifier::external_body]
+#[pbt]
+pub fn pbt_cell_put_take(v: u32) -> (ret: bool)
+    ensures
+        ret,
+{
+    let (p, Tracked(mut perm)) = PCell::<u32>::empty();
+    p.put(Tracked(&mut perm), v);
+    p.take(Tracked(&mut perm)) == v
+}
+
+/// `new` + `replace` + `borrow`: replace returns the old value and stores
+/// the new one; borrow observes it.
+#[cfg(not(verus_verify_core))]
+#[allow(deprecated)]
+#[verifier::external_body]
+#[pbt]
+pub fn pbt_cell_replace_borrow(v: u32, v2: u32) -> (ret: bool)
+    ensures
+        ret,
+{
+    let (p, Tracked(mut perm)) = PCell::<u32>::new(v);
+    let old_v = p.replace(Tracked(&mut perm), v2);
+    old_v == v && *p.borrow(Tracked(&perm)) == v2
+}
+
+/// `borrow_mut`: reads the current value and writes through.
+#[cfg(not(verus_verify_core))]
+#[allow(deprecated)]
+#[verifier::external_body]
+#[pbt]
+pub fn pbt_cell_borrow_mut(v: u32, v2: u32) -> (ret: bool)
+    ensures
+        ret,
+{
+    let (p, Tracked(mut perm)) = PCell::<u32>::new(v);
+    let read_ok = {
+        let r = p.borrow_mut(Tracked(&mut perm));
+        let ok = *r == v;
+        *r = v2;
+        ok
+    };
+    read_ok && *p.borrow(Tracked(&perm)) == v2
+}
+
+/// `write` (Copy tier): overwrites the initialized value.
+#[cfg(not(verus_verify_core))]
+#[allow(deprecated)]
+#[verifier::external_body]
+#[pbt]
+pub fn pbt_cell_write(v: u32, v2: u32) -> (ret: bool)
+    ensures
+        ret,
+{
+    let (p, Tracked(mut perm)) = PCell::<u32>::new(v);
+    p.write(Tracked(&mut perm), v2);
+    *p.borrow(Tracked(&perm)) == v2
+}
+
 } // verus!

@@ -193,13 +193,43 @@ pub assume_specification[ str::split_at ](s: &str, mid: usize) -> (res: (&str, &
         res.1.spec_bytes() =~= s.spec_bytes().subrange(mid as int, s.spec_bytes().len() as int),
 ;
 
+// Exec twin for `valid_utf8` (utf8.rs): std's own validator is the
+// independent oracle for the recursive spec definition.
 #[cfg(not(verus_verify_core))]
+external_pbt_provide! {
+    fn valid_utf8(bytes: Seq<u8>) -> bool {
+        core::str::from_utf8(bytes).is_ok()
+    }
+}
+
+#[cfg(not(verus_verify_core))]
+#[pbt]
 pub assume_specification[ str::from_utf8_unchecked ](v: &[u8]) -> (res: &str)
     requires
         valid_utf8(v@),
     ensures
         res.spec_bytes() =~= v@,
 ;
+
+/// `substring_ascii`: ASCII-guarded byte-range slicing matches the view
+/// subrange (guard discharged by filtering to ASCII inputs).
+#[cfg(not(verus_verify_core))]
+#[verifier::external_body]
+#[pbt]
+pub fn pbt_substring_ascii(s: &str, from: u8, to: u8) -> (ret: bool)
+    ensures
+        ret,
+{
+    if !s.is_ascii() {
+        return true;  // precondition excluded
+    }
+    let (from, to) = (from as usize, to as usize);
+    if !(from <= to && to <= s.len()) {
+        return true;  // precondition excluded
+    }
+    let sub = s.substring_ascii(from, to);
+    sub.as_bytes() == &s.as_bytes()[from..to] && sub.is_ascii()
+}
 
 #[cfg(all(feature = "alloc", not(verus_verify_core)))]
 pub uninterp spec fn to_string_from_display_ensures<T: core::fmt::Display + ?Sized>(
@@ -267,6 +297,10 @@ impl StrSliceExecFns for str {
         self.chars().nth(i).unwrap()
     }
 
+    // (no direct #[pbt]: the requires uses the method-form spec call
+    // `self.is_ascii()`, which the rewriter routes to a nonexistent
+    // `.exec_is_ascii()` method — the free-fn twin only covers free-call
+    // form. See pbt_substring_ascii.)
     #[verifier::external_body]
     fn substring_ascii<'a>(&'a self, from: usize, to: usize) -> (ret: &'a str)
         requires

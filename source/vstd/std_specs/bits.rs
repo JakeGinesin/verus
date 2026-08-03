@@ -593,17 +593,46 @@ pub assume_specification[ u64::trailing_ones ](i: u64) -> (r: u32)
         r == u64_trailing_ones(i),
 ;
 
+// Exec twins for the opaque recursive spec fns (independent bit-scan
+// oracles; the option-1 rule lets them override the same-block spec fns,
+// whose int-typed opaque recursion the exec_spec compiler can't lower).
+#[cfg(not(verus_verify_core))]
+external_pbt_provide! {
+    fn u64_leading_zeros(i: u64) -> int {
+        let mut n: u32 = 0;
+        while n < 64 && (i << n) & (1u64 << 63) == 0 {
+            n += 1;
+        }
+        ::verus_pbt::__pbt_int::lift(n)
+    }
+}
+
+#[cfg(not(verus_verify_core))]
+external_pbt_provide! {
+    fn u64_leading_ones(i: u64) -> u32 {
+        let mut n: u32 = 0;
+        while n < 64 && (!i << n) & (1u64 << 63) == 0 {
+            n += 1;
+        }
+        n
+    }
+}
+
 //#[verifier::when_used_as_spec(u64_leading_zeros)]
+#[pbt]
 pub assume_specification[ u64::leading_zeros ](i: u64) -> (r: u32)
     ensures
         r as int == u64_leading_zeros(i),
 ;
 
 #[verifier::when_used_as_spec(u64_leading_ones)]
+#[pbt]
 pub assume_specification[ u64::leading_ones ](i: u64) -> (r: u32)
     ensures
         r == u64_leading_ones(i),
 ;
+
+
 
 pub broadcast proof fn axiom_u64_trailing_zeros(i: u64)
     ensures

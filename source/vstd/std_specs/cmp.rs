@@ -464,6 +464,46 @@ impl<A: PointeeSized + Ord> OrdSpecImpl for &A {
     }
 }
 
+// ---------------------------------------------------------------------------
+// PBT wrappers for the shared-reference comparison forwarding specs above
+// (bare assume_specs; their contracts live in the PartialEqSpecImpl /
+// PartialOrdSpecImpl / OrdSpecImpl blanket impls for &A, which forward to
+// A's spec — restated here at A = B = u32, where the obeys guards hold).
+// ---------------------------------------------------------------------------
+#[cfg(not(verus_verify_core))]
+#[verifier::external_body]
+#[pbt]
+pub fn pbt_ref_eq_ne(a: u32, b: u32) -> (ret: bool)
+    ensures
+        ret,
+{
+    let (ra, rb) = (&a, &b);
+    (ra == rb) == (a == b) && (ra != rb) == (a != b)
+}
+
+#[cfg(not(verus_verify_core))]
+#[verifier::external_body]
+#[pbt]
+pub fn pbt_ref_partial_ord(a: u32, b: u32) -> (ret: bool)
+    ensures
+        ret,
+{
+    let (ra, rb) = (&a, &b);
+    ra.partial_cmp(&rb) == a.partial_cmp(&b) && (ra < rb) == (a < b) && (ra <= rb) == (a <= b)
+        && (ra > rb) == (a > b) && (ra >= rb) == (a >= b)
+}
+
+#[cfg(not(verus_verify_core))]
+#[verifier::external_body]
+#[pbt]
+pub fn pbt_ref_ord_cmp(a: u32, b: u32) -> (ret: bool)
+    ensures
+        ret,
+{
+    let (ra, rb) = (&a, &b);
+    Ord::cmp(&ra, &rb) == Ord::cmp(&a, &b)
+}
+
 pub assume_specification<'a, A: PointeeSized + Ord>[ <&'a A as Ord>::cmp ](
     a: &&'a A,
     b: &&'a A,

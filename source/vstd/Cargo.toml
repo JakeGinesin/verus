@@ -43,7 +43,10 @@ verus_pbt_vstd_ext = { path = "../../../verus-pbt/source/vstd_ext" }
 # `A: Allocator`, a nightly API) compiles under plain `cargo test`.
 # The unstable gate it enables requires RUSTC_BOOTSTRAP=1, supplied by
 # ./.cargo/config.toml exactly like verus's own vargo builds.
-default = ["std", "allocator"]
+# `nonzero_internals` is also on by default so std_specs/nonzero.rs is
+# un-gated for PBT (its ZeroablePrimitive bound needs the same-named
+# unstable rust feature, enabled in vstd.rs).
+default = ["std", "allocator", "nonzero_internals"]
 std = ["alloc"]
 alloc = []
 allocator = []

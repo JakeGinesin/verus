@@ -1232,6 +1232,8 @@ pub broadcast proof fn lemma_seq_index_decreases<A>(s: Seq<A>, i: int)
 }
 
 // TODO: this should be provable
+// #[pbt_axiom(A = u32)]
+// Seq is not supported yet in verus-pbt
 pub axiom fn axiom_seq_len_decreases<A>(s1: Seq<A>, s2: Seq<A>)
     requires
         s2.len() < s1.len(),

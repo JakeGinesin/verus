@@ -387,6 +387,7 @@ pub trait VecAdditionalExecFns<T> {
 impl<T> VecAdditionalExecFns<T> for alloc::vec::Vec<T> {
     /// Replacement for `self[i] = value;` (which Verus does not support for technical reasons)
     #[verifier::external_body]
+    #[pbt(T = u32)]
     fn set(&mut self, i: usize, value: T)
         requires
             i < old(self).len(),
@@ -398,6 +399,7 @@ impl<T> VecAdditionalExecFns<T> for alloc::vec::Vec<T> {
 
     /// Replacement for `swap(&mut self[i], &mut value)` (which Verus does not support for technical reasons)
     #[verifier::external_body]
+    #[pbt(T = u32)]
     fn set_and_swap(&mut self, i: usize, value: &mut T)
         requires
             i < old(self).len(),

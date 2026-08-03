@@ -134,6 +134,40 @@ pub fn pbt_vecdeque_reserve_bounded(v: &mut VecDeque<u32>, additional: u16)
     VecDeque::<u32>::reserve(v, additional as usize)
 }
 
+/// `VecDeque::resize` over the bounded (u16) size domain.
+#[cfg(not(verus_verify_core))]
+#[verifier::external_body]
+#[pbt]
+pub fn pbt_vecdeque_resize_bounded(v: VecDeque<u32>, n: u16, value: u32) -> (ret: bool)
+    ensures
+        ret,
+{
+    let mut r = v.clone();
+    r.resize(n as usize, value);
+    let n = n as usize;
+    let keep = n.min(v.len());
+    r.len() == n && (0..keep).all(|i| r[i] == v[i]) && (keep..n).all(|i| r[i] == value)
+}
+
+/// `VecDeque::index` (guarded element read; direct #[pbt] blocked: the
+/// `i < len` precondition lives implicitly in the IndexSpec trait's
+/// `index_req`, so an unguarded harness would panic on out-of-bounds).
+#[cfg(not(verus_verify_core))]
+#[verifier::external_body]
+#[pbt]
+pub fn pbt_vecdeque_index(v: VecDeque<u32>, i: u16) -> (ret: bool)
+    ensures
+        ret,
+{
+    if (i as usize) < v.len() {
+        let by_index = v[i as usize];
+        let by_iter = *v.iter().nth(i as usize).unwrap();
+        by_index == by_iter
+    } else {
+        true  // precondition excluded
+    }
+}
+
 #[pbt(T = u32)]
 pub assume_specification<T>[ <VecDeque<T> as core::default::Default>::default ]() -> (v: VecDeque<
     T,
