@@ -1,8 +1,0 @@
-# Seeds for failure cases proptest has generated in the past. It is
-# automatically read and these particular cases re-run before any
-# novel cases are generated.
-#
-# It is recommended to check this file in to source control so that
-# everyone who runs the test benefits from these saved cases.
-cc 8c9054a006727406ccca1bfad99a23be73e140dbf42e0d2afe954258570c10d8 # shrinks to x = 0
-cc 01e87a57aeff2acd0b2edbdbba7d6719843b8b6c0c39fbf7a2d387cede86d2cd # shrinks to :: verus_spec_check :: VcheckSeqSample(s) = [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]
