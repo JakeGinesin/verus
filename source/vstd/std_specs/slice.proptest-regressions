@@ -1,0 +1,9 @@
+# Seeds for failure cases proptest has generated in the past. It is
+# automatically read and these particular cases re-run before any
+# novel cases are generated.
+#
+# It is recommended to check this file in to source control so that
+# everyone who runs the test benefits from these saved cases.
+cc bf6eadab837b2deb189718bf7017c8be4b41980a2a5c0d25437896c835cb740a # shrinks to :: verus_spec_check :: VcheckSeqSample(v) = [], a = 0, b = 87, steps = 1, w = 0
+cc fed5a80a5036b31fd50ebffe85cc1c1b44f5adae20d3eb86d4a3263157bf7530 # shrinks to :: verus_spec_check :: VcheckSeqSample(v) = [0], kind = 118, a = 145, b = 153, steps = 1
+cc 6a4924ed96a894369657d0215716f86bc4ec3e39c91a71a02688d5d3ee71d16a # shrinks to :: verus_spec_check :: VcheckSeqSample(mut v) = [0, 0, 0, 0, 0, 0], r = 6..=6 (exhausted), w = 0

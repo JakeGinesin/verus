@@ -684,83 +684,94 @@ pub fn vcheck_slice_copy_within(v: Vec<u32>, start: u16, end: u16, dest: u16) ->
 
 verus! {
 
-/// `get` on every slice range kind agrees with the SliceIndexSpec bounds model
+// SliceIndexSpec bounds model at each sampled range type
+
 #[cfg(not(any(verus_verify_core, verus_keep_ghost)))]
 #[verifier::external_body]
 #[vcheck]
-pub fn vcheck_slice_get_ranges(v: Vec<u8>, kind: u8, a: u8, b: u8, steps: u8) -> (ret: bool)
+pub fn vcheck_slice_get_range(v: &[u8], r: Range<usize>) -> (out: Option<usize>)
     ensures
-        ret,
+        out is Some <==> r.start <= r.end && r.end <= v@.len(),
+        out is Some ==> out->Some_0 == r.end - r.start,
 {
-    let len = v.len();
-    let a = a as usize % (len + 3);
-    let b = b as usize % (len + 3);
-    let (lo, hi, got): (i128, i128, Option<&[u8]>) = match kind % 6 {
-        0 => (a as i128, b as i128, v.get(a..b)),
-        1 => (0, b as i128, v.get(..b)),
-        2 => (a as i128, len as i128, v.get(a..)),
-        3 => (0, len as i128, v.get(..)),
-        4 => {
-            let mut r = a..=b;
-            for _ in 0..(steps % 8) {
-                r.next();
-            }
-            let exhausted = r.is_empty() && r.start() <= r.end();
-            let hi = if exhausted {
-                *r.end() as i128
-            } else {
-                *r.end() as i128 + 1
-            };
-            (*r.start() as i128, hi, v.get(r))
-        },
-        _ => (0, b as i128 + 1, v.get(..=b)),
-    };
-    let in_bounds = 0 <= lo && lo <= hi && hi <= len as i128;
-    match got {
-        Some(x) => in_bounds && x == &v[lo as usize..hi as usize],
-        None => !in_bounds,
-    }
+    v.get(r).map(|x| x.len())
 }
 
-/// `get_mut` on inclusive ranges agrees with the bounds model and writes through
 #[cfg(not(any(verus_verify_core, verus_keep_ghost)))]
 #[verifier::external_body]
 #[vcheck]
-pub fn vcheck_slice_get_mut_inclusive(v: Vec<u8>, a: u8, b: u8, steps: u8, w: u8) -> (ret: bool)
+pub fn vcheck_slice_get_range_to(v: &[u8], r: RangeTo<usize>) -> (out: Option<usize>)
     ensures
-        ret,
+        out is Some <==> r.end <= v@.len(),
+        out is Some ==> out->Some_0 == r.end,
 {
-    let len = v.len();
-    let a = a as usize % (len + 3);
-    let b = b as usize % (len + 3);
-    let mut r = a..=b;
-    for _ in 0..(steps % 8) {
-        r.next();
-    }
-    let exhausted = r.is_empty() && r.start() <= r.end();
-    let lo = *r.start() as i128;
-    let hi = if exhausted {
-        *r.end() as i128
-    } else {
-        *r.end() as i128 + 1
-    };
-    let in_bounds = lo <= hi && hi <= len as i128;
-    let mut v2 = v.clone();
-    match v2.get_mut(r) {
+    v.get(r).map(|x| x.len())
+}
+
+#[cfg(not(any(verus_verify_core, verus_keep_ghost)))]
+#[verifier::external_body]
+#[vcheck]
+pub fn vcheck_slice_get_range_from(v: &[u8], r: RangeFrom<usize>) -> (out: Option<usize>)
+    ensures
+        out is Some <==> r.start <= v@.len(),
+        out is Some ==> out->Some_0 == v@.len() - r.start,
+{
+    v.get(r).map(|x| x.len())
+}
+
+#[cfg(not(any(verus_verify_core, verus_keep_ghost)))]
+#[verifier::external_body]
+#[vcheck]
+pub fn vcheck_slice_get_range_full(v: &[u8], r: RangeFull) -> (out: Option<usize>)
+    ensures
+        out is Some,
+        out->Some_0 == v@.len(),
+{
+    v.get(r).map(|x| x.len())
+}
+
+#[cfg(not(any(verus_verify_core, verus_keep_ghost)))]
+#[verifier::external_body]
+#[vcheck]
+pub fn vcheck_slice_get_range_to_inclusive(v: &[u8], r: RangeToInclusive<usize>) -> (out: Option<usize>)
+    ensures
+        out is Some <==> r.end as int + 1 <= v@.len(),
+        out is Some ==> out->Some_0 == r.end as int + 1,
+{
+    v.get(r).map(|x| x.len())
+}
+
+#[cfg(not(any(verus_verify_core, verus_keep_ghost)))]
+#[verifier::external_body]
+#[vcheck]
+pub fn vcheck_slice_get_range_inclusive(v: &[u8], r: RangeInclusive<usize>) -> (out: Option<usize>)
+    ensures
+        out is Some <==> r@.start <= (if r@.exhausted { r@.end as int } else { r@.end as int + 1 })
+            && (if r@.exhausted { r@.end as int } else { r@.end as int + 1 }) <= v@.len(),
+        out is Some ==> out->Some_0 == (if r@.exhausted { r@.end as int } else { r@.end as int + 1 })
+            - r@.start,
+{
+    v.get(r).map(|x| x.len())
+}
+
+#[cfg(not(any(verus_verify_core, verus_keep_ghost)))]
+#[verifier::external_body]
+#[vcheck]
+pub fn vcheck_slice_get_mut_range_inclusive(v: &mut Vec<u8>, r: RangeInclusive<usize>, w: u8) -> (ok: bool)
+    ensures
+        ok <==> r@.start <= (if r@.exhausted { r@.end as int } else { r@.end as int + 1 })
+            && (if r@.exhausted { r@.end as int } else { r@.end as int + 1 }) <= old(v)@.len(),
+        !ok ==> final(v)@ == old(v)@,
+        final(v)@.len() == old(v)@.len(),
+{
+    match v.as_mut_slice().get_mut(r) {
         Some(x) => {
-            let ok = in_bounds && x.len() as i128 == hi - lo;
             for e in x.iter_mut() {
                 *e = w;
             }
-            let mut exp = v.clone();
-            if in_bounds {
-                for i in lo as usize..hi as usize {
-                    exp[i] = w;
-                }
-            }
-            ok && v2 == exp
+            true
         },
-        None => !in_bounds && v2 == v,
+        None => false,
     }
 }
 

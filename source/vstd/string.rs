@@ -1058,15 +1058,89 @@ impl<I: SliceIndexSpec<str>> super::std_specs::core::IndexSpecImpl<I> for str {
 
 pub use super::view::View;
 
-} // verus!
 
-verus! {
+// str SliceIndexSpec bounds model at each sampled range type
 
-/// `str::get` on every range kind agrees with the SliceIndexSpec bounds model
 #[cfg(not(any(verus_verify_core, verus_keep_ghost)))]
 #[verifier::external_body]
 #[vcheck]
-pub fn vcheck_str_get_ranges(s: String, kind: u8, a: u8, b: u8, steps: u8) -> (ret: bool)
+pub fn vcheck_str_get_range(s: &str, r: core::ops::Range<usize>) -> (out: Option<usize>)
+    ensures
+        out is Some <==> r.start <= r.end && r.end <= s.spec_bytes().len()
+            && is_char_boundary(s.spec_bytes(), r.start as int)
+            && is_char_boundary(s.spec_bytes(), r.end as int),
+        out is Some ==> out->Some_0 == r.end - r.start,
+{
+    s.get(r).map(|x| x.len())
+}
+
+#[cfg(not(any(verus_verify_core, verus_keep_ghost)))]
+#[verifier::external_body]
+#[vcheck]
+pub fn vcheck_str_get_range_to(s: &str, r: core::ops::RangeTo<usize>) -> (out: Option<usize>)
+    ensures
+        out is Some <==> r.end <= s.spec_bytes().len() && is_char_boundary(s.spec_bytes(), r.end as int),
+        out is Some ==> out->Some_0 == r.end,
+{
+    s.get(r).map(|x| x.len())
+}
+
+#[cfg(not(any(verus_verify_core, verus_keep_ghost)))]
+#[verifier::external_body]
+#[vcheck]
+pub fn vcheck_str_get_range_from(s: &str, r: core::ops::RangeFrom<usize>) -> (out: Option<usize>)
+    ensures
+        out is Some <==> r.start <= s.spec_bytes().len() && is_char_boundary(s.spec_bytes(), r.start as int),
+        out is Some ==> out->Some_0 == s.spec_bytes().len() - r.start,
+{
+    s.get(r).map(|x| x.len())
+}
+
+#[cfg(not(any(verus_verify_core, verus_keep_ghost)))]
+#[verifier::external_body]
+#[vcheck]
+pub fn vcheck_str_get_range_full(s: &str, r: core::ops::RangeFull) -> (out: Option<usize>)
+    ensures
+        out is Some,
+        out->Some_0 == s.spec_bytes().len(),
+{
+    s.get(r).map(|x| x.len())
+}
+
+#[cfg(not(any(verus_verify_core, verus_keep_ghost)))]
+#[verifier::external_body]
+#[vcheck]
+pub fn vcheck_str_get_range_to_inclusive(s: &str, r: core::ops::RangeToInclusive<usize>) -> (out: Option<usize>)
+    ensures
+        out is Some <==> r.end as int + 1 <= s.spec_bytes().len()
+            && is_char_boundary(s.spec_bytes(), (r.end as int + 1) as usize as int),
+        out is Some ==> out->Some_0 == r.end as int + 1,
+{
+    s.get(r).map(|x| x.len())
+}
+
+#[cfg(not(any(verus_verify_core, verus_keep_ghost)))]
+#[verifier::external_body]
+#[vcheck]
+pub fn vcheck_str_get_range_inclusive(s: &str, r: core::ops::RangeInclusive<usize>) -> (out: Option<usize>)
+    ensures
+        out is Some <==> r@.start <= (if r@.exhausted { r@.end as int } else { r@.end as int + 1 })
+            && (if r@.exhausted { r@.end as int } else { r@.end as int + 1 }) <= s.spec_bytes().len()
+            && is_char_boundary(s.spec_bytes(), r@.start as int)
+            && is_char_boundary(
+                s.spec_bytes(),
+                (if r@.exhausted { r@.end as int } else { r@.end as int + 1 }) as usize as int,
+            ),
+        out is Some ==> out->Some_0 == (if r@.exhausted { r@.end as int } else { r@.end as int + 1 })
+            - r@.start,
+{
+    s.get(r).map(|x| x.len())
+}
+
+#[cfg(not(any(verus_verify_core, verus_keep_ghost)))]
+#[verifier::external_body]
+#[vcheck]
+pub fn vcheck_str_get_bound_pair(s: String, a: u8, b: u8, sel: u8) -> (ret: bool)
     ensures
         ret,
 {
@@ -1078,43 +1152,20 @@ pub fn vcheck_str_get_ranges(s: String, kind: u8, a: u8, b: u8, steps: u8) -> (r
         1 => core::ops::Bound::Excluded(x),
         _ => core::ops::Bound::Unbounded,
     };
-    let (lo, hi, got): (i128, i128, Option<&str>) = match kind % 7 {
-        0 => (a as i128, b as i128, s.get(a..b)),
-        1 => (0, b as i128, s.get(..b)),
-        2 => (a as i128, len as i128, s.get(a..)),
-        3 => (0, len as i128, s.get(..)),
-        4 => {
-            let mut r = a..=b;
-            for _ in 0..(steps % 8) {
-                r.next();
-            }
-            let exhausted = r.is_empty() && r.start() <= r.end();
-            let hi = if exhausted {
-                *r.end() as i128
-            } else {
-                *r.end() as i128 + 1
-            };
-            (*r.start() as i128, hi, s.get(r))
-        },
-        5 => (0, b as i128 + 1, s.get(..=b)),
-        _ => {
-            let (sb, eb) = (bound(steps, a), bound(steps / 3, b));
-            let lo = match sb {
-                core::ops::Bound::Included(x) => x as i128,
-                core::ops::Bound::Excluded(x) => x as i128 + 1,
-                core::ops::Bound::Unbounded => 0,
-            };
-            let hi = match eb {
-                core::ops::Bound::Included(x) => x as i128 + 1,
-                core::ops::Bound::Excluded(x) => x as i128,
-                core::ops::Bound::Unbounded => len as i128,
-            };
-            (lo, hi, s.get((sb, eb)))
-        },
+    let (sb, eb) = (bound(sel, a), bound(sel / 3, b));
+    let lo = match sb {
+        core::ops::Bound::Included(x) => x as i128,
+        core::ops::Bound::Excluded(x) => x as i128 + 1,
+        core::ops::Bound::Unbounded => 0,
+    };
+    let hi = match eb {
+        core::ops::Bound::Included(x) => x as i128 + 1,
+        core::ops::Bound::Excluded(x) => x as i128,
+        core::ops::Bound::Unbounded => len as i128,
     };
     let in_bounds = 0 <= lo && lo <= hi && hi <= len as i128 && s.is_char_boundary(lo as usize)
         && s.is_char_boundary(hi as usize);
-    match got {
+    match s.get((sb, eb)) {
         Some(x) => in_bounds && x.as_bytes() == &s.as_bytes()[lo as usize..hi as usize],
         None => !in_bounds,
     }

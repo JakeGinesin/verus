@@ -55,6 +55,7 @@ pub struct ExTryReserveError(alloc::collections::TryReserveError);
 #[verifier::external_body]
 #[cfg_attr(verus_keep_ghost, rustc_diagnostic_item = "verus::vstd::std_specs::vec::vec_index")]
 #[vcheck(T = u32, A = alloc::alloc::Global)]
+#[vcheck(T = (), A = alloc::alloc::Global)]
 pub fn vec_index<T, A: Allocator>(vec: &Vec<T, A>, i: usize) -> (element: &T)
     requires
         i < vec.view().len(),
@@ -184,12 +185,14 @@ pub fn vcheck_vec_eq(x: Vec<u32>, y: Vec<u32>) -> (ret: bool)
 
 ////// Other functions
 #[vcheck(T = u32)]
+#[vcheck(T = ())]
 pub assume_specification<T>[ Vec::<T>::new ]() -> (v: Vec<T>)
     ensures
         v@ == Seq::<T>::empty(),
 ;
 
 #[vcheck(T = u32)]
+#[vcheck(T = ())]
 pub assume_specification<T>[ <Vec<T> as core::default::Default>::default ]() -> (v: Vec<T>)
     ensures
         v@ == Seq::<T>::empty(),
@@ -220,6 +223,7 @@ pub assume_specification<T, A: Allocator>[ Vec::<T, A>::reserve ](
 ;
 
 #[vcheck(T = u32, A = alloc::alloc::Global)] // vc#1359
+#[vcheck(T = (), A = alloc::alloc::Global)]
 pub assume_specification<T, A: Allocator>[ Vec::<T, A>::try_reserve ](
     vec: &mut Vec<T, A>,
     additional: usize,
@@ -229,6 +233,7 @@ pub assume_specification<T, A: Allocator>[ Vec::<T, A>::try_reserve ](
 ;
 
 #[vcheck(T = u32, A = alloc::alloc::Global)]
+#[vcheck(T = (), A = alloc::alloc::Global)]
 pub assume_specification<T, A: Allocator>[ Vec::<T, A>::push ](vec: &mut Vec<T, A>, value: T)
     ensures
         final(vec)@ == old(vec)@.push(value),
@@ -244,6 +249,7 @@ pub assume_specification<T, A: Allocator>[ Vec::<T, A>::pop ](vec: &mut Vec<T, A
 ;
 
 #[vcheck(T = u32, A = alloc::alloc::Global)]
+#[vcheck(T = (), A = alloc::alloc::Global)]
 pub assume_specification<T, A: Allocator>[ Vec::<T, A>::append ](
     vec: &mut Vec<T, A>,
     other: &mut Vec<T, A>,
@@ -285,6 +291,7 @@ pub assume_specification<T, I: SliceIndex<[T]>, A: Allocator>[Vec::<T, A>::index
 ;
 
 #[vcheck(T = u32, A = alloc::alloc::Global)]
+#[vcheck(T = (), A = alloc::alloc::Global)]
 pub assume_specification<T, A: Allocator>[ Vec::<T, A>::swap_remove ](
     vec: &mut Vec<T, A>,
     i: usize,
@@ -297,6 +304,7 @@ pub assume_specification<T, A: Allocator>[ Vec::<T, A>::swap_remove ](
 ;
 
 #[vcheck(T = u32, A = alloc::alloc::Global)]
+#[vcheck(T = (), A = alloc::alloc::Global)]
 pub assume_specification<T, A: Allocator>[ Vec::<T, A>::insert ](
     vec: &mut Vec<T, A>,
     i: usize,
@@ -309,6 +317,7 @@ pub assume_specification<T, A: Allocator>[ Vec::<T, A>::insert ](
 ;
 
 #[vcheck(T = u32, A = alloc::alloc::Global)]
+#[vcheck(T = (), A = alloc::alloc::Global)]
 pub assume_specification<T, A: Allocator> [ <Vec<T, A>>::is_empty ](
     v: &Vec<T, A>,
 ) -> (res: bool)
@@ -316,6 +325,7 @@ pub assume_specification<T, A: Allocator> [ <Vec<T, A>>::is_empty ](
 ;
 
 #[vcheck(T = u32, A = alloc::alloc::Global)]
+#[vcheck(T = (), A = alloc::alloc::Global)]
 pub assume_specification<T, A: Allocator>[ Vec::<T, A>::remove ](
     vec: &mut Vec<T, A>,
     i: usize,
@@ -328,12 +338,14 @@ pub assume_specification<T, A: Allocator>[ Vec::<T, A>::remove ](
 ;
 
 #[vcheck(T = u32, A = alloc::alloc::Global)]
+#[vcheck(T = (), A = alloc::alloc::Global)]
 pub assume_specification<T, A: Allocator>[ Vec::<T, A>::clear ](vec: &mut Vec<T, A>)
     ensures
         final(vec).view() == Seq::<T>::empty(),
 ;
 
 #[vcheck(T = u32, A = alloc::alloc::Global)]
+#[vcheck(T = (), A = alloc::alloc::Global)]
 pub assume_specification<T, A: Allocator>[ Vec::<T, A>::as_slice ](vec: &Vec<T, A>) -> (slice: &[T])
     ensures
         slice@ == vec@,
@@ -341,6 +353,7 @@ pub assume_specification<T, A: Allocator>[ Vec::<T, A>::as_slice ](vec: &Vec<T, 
 
 #[doc(hidden)]
 #[vcheck(T = u32, A = alloc::alloc::Global)] // vc#1357
+#[vcheck(T = (), A = alloc::alloc::Global)]
 pub assume_specification<T, A: Allocator>[ Vec::<T, A>::as_mut_slice ](vec: &mut Vec<T, A>) -> (slice: &mut [T])
     ensures
         slice@ == old(vec)@,
@@ -348,6 +361,7 @@ pub assume_specification<T, A: Allocator>[ Vec::<T, A>::as_mut_slice ](vec: &mut
 ;
 
 #[vcheck(T = u32, A = alloc::alloc::Global)]
+#[vcheck(T = (), A = alloc::alloc::Global)]
 pub assume_specification<T, A: Allocator>[ <Vec<T, A> as core::ops::Deref>::deref ](
     vec: &Vec<T, A>,
 ) -> (slice: &[T])
@@ -356,6 +370,7 @@ pub assume_specification<T, A: Allocator>[ <Vec<T, A> as core::ops::Deref>::dere
 ;
 
 #[vcheck(T = u32, A = alloc::alloc::Global)] // vc#1356
+#[vcheck(T = (), A = alloc::alloc::Global)]
 pub assume_specification<T, A: Allocator>[ <Vec<T, A> as core::ops::DerefMut>::deref_mut ](
     vec: &mut Vec<T, A>,
 ) -> (slice: &mut [T])

@@ -94,6 +94,7 @@ pub assume_specification<T, A: Allocator>[ VecDeque::<T, A>::len ](v: &VecDeque<
 ;
 
 #[vcheck(T = u32)]
+#[vcheck(T = ())]
 pub assume_specification<T>[ VecDeque::<T>::new ]() -> (v: VecDeque<T>)
     ensures
         v@ == Seq::<T>::empty(),
@@ -164,6 +165,7 @@ pub fn vcheck_vecdeque_index(v: VecDeque<u32>, i: u16) -> (ret: bool)
 }
 
 #[vcheck(T = u32)]
+#[vcheck(T = ())]
 pub assume_specification<T>[ <VecDeque<T> as core::default::Default>::default ]() -> (v: VecDeque<
     T,
 >)
@@ -186,6 +188,7 @@ pub assume_specification<T, A: Allocator>[ VecDeque::<T, A>::reserve ](
 ;
 
 #[vcheck(T = u32, A = alloc::alloc::Global)]
+#[vcheck(T = (), A = alloc::alloc::Global)]
 pub assume_specification<T, A: Allocator>[ VecDeque::<T, A>::push_back ](
     v: &mut VecDeque<T, A>,
     value: T,
@@ -195,6 +198,7 @@ pub assume_specification<T, A: Allocator>[ VecDeque::<T, A>::push_back ](
 ;
 
 #[vcheck(T = u32, A = alloc::alloc::Global)]
+#[vcheck(T = (), A = alloc::alloc::Global)]
 pub assume_specification<T, A: Allocator>[ VecDeque::<T, A>::push_front ](
     v: &mut VecDeque<T, A>,
     value: T,
@@ -240,6 +244,7 @@ pub assume_specification<T, A: Allocator>[ VecDeque::<T, A>::pop_front ](
 ;
 
 #[vcheck(T = u32, A = alloc::alloc::Global)]
+#[vcheck(T = (), A = alloc::alloc::Global)]
 pub assume_specification<T, A: Allocator>[ VecDeque::<T, A>::append ](
     v: &mut VecDeque<T, A>,
     other: &mut VecDeque<T, A>,
@@ -250,6 +255,7 @@ pub assume_specification<T, A: Allocator>[ VecDeque::<T, A>::append ](
 ;
 
 #[vcheck(T = u32, A = alloc::alloc::Global)]
+#[vcheck(T = (), A = alloc::alloc::Global)]
 pub assume_specification<T, A: Allocator>[ VecDeque::<T, A>::insert ](
     v: &mut VecDeque<T, A>,
     i: usize,
@@ -262,6 +268,7 @@ pub assume_specification<T, A: Allocator>[ VecDeque::<T, A>::insert ](
 ;
 
 #[vcheck(T = u32, A = alloc::alloc::Global)]
+#[vcheck(T = (), A = alloc::alloc::Global)]
 pub assume_specification<T, A: Allocator>[ VecDeque::<T, A>::remove ](
     v: &mut VecDeque<T, A>,
     i: usize,
@@ -281,6 +288,7 @@ pub assume_specification<T, A: Allocator>[ VecDeque::<T, A>::remove ](
 ;
 
 #[vcheck(T = u32, A = alloc::alloc::Global)]
+#[vcheck(T = (), A = alloc::alloc::Global)]
 pub assume_specification<T, A: Allocator>[ VecDeque::<T, A>::clear ](v: &mut VecDeque<T, A>)
     ensures
         final(v).view() == Seq::<T>::empty(),

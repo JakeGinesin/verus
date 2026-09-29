@@ -1,0 +1,3 @@
+# overrides the verus_keep_ghost build.rustflags from source/.cargo
+[target.'cfg(all())']
+rustflags = ["--cfg", "vstd_vcheck"]

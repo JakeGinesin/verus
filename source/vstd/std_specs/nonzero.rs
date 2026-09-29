@@ -93,6 +93,7 @@ pub open spec fn nonzero_spec_get<T: ZeroablePrimitive>(n: NonZero<T>) -> T {
     n@
 }
 
+#[vcheck(T = u32)]
 #[verifier::when_used_as_spec(nonzero_spec_get)]
 pub assume_specification<T: ZeroablePrimitive>[ NonZero::<T>::get ](n: NonZero<T>) -> T
     returns
@@ -160,6 +161,7 @@ impl<T: ZeroablePrimitive> FromSpecImpl<NonZero<T>> for T {
     }
 }
 
+#[vcheck(T = u32)]
 pub assume_specification<T: ZeroablePrimitive>[ <NonZero<T> as Clone>::clone ](
     nz: &NonZero<T>,
 ) -> NonZero<T>
@@ -173,90 +175,75 @@ pub broadcast group group_nonzero_axioms {
     axiom_nonzero_is_not_zero,
 }
 
-// Composite vcheck wrappers
+// NonZero-sampled vcheck wrappers
 
-/// `NonZero::new` + `get`: Some(nz) with nz.get() == n iff n != 0
 #[cfg(not(any(verus_verify_core, verus_keep_ghost)))]
 #[verifier::external_body]
 #[vcheck]
-pub fn vcheck_nonzero_new_get(n: u32) -> (ret: bool)
+pub fn vcheck_nonzero_new(n: u32) -> (ret: Option<NonZero<u32>>)
     ensures
-        ret,
+        ret is Some <==> n != 0,
+        ret is Some ==> ret->Some_0@ == n,
 {
-    match NonZero::<u32>::new(n) {
-        Some(nz) => n != 0 && nz.get() == n,
-        None => n == 0,
-    }
+    NonZero::<u32>::new(n)
 }
 
-/// `NonZero::new_unchecked` (guarded on the requires): get() == n
 #[cfg(not(any(verus_verify_core, verus_keep_ghost)))]
 #[verifier::external_body]
 #[vcheck]
-pub fn vcheck_nonzero_new_unchecked(n: u32) -> (ret: bool)
+pub fn vcheck_nonzero_new_unchecked(n: u32) -> (ret: NonZero<u32>)
+    requires
+        n != 0,
     ensures
-        ret,
+        ret@ == n,
 {
-    if n == 0 {
-        true  // precondition excluded
-    } else {
-        unsafe { NonZero::<u32>::new_unchecked(n) }.get() == n
-    }
+    unsafe { NonZero::<u32>::new_unchecked(n) }
 }
 
-/// `NonZero as Clone`: clone returns the same value (`returns nz`)
 #[cfg(not(any(verus_verify_core, verus_keep_ghost)))]
 #[verifier::external_body]
 #[vcheck]
-pub fn vcheck_nonzero_clone(n: u32) -> (ret: bool)
+pub fn vcheck_nonzero_eq(x: NonZero<u32>, y: NonZero<u32>) -> (ret: bool)
     ensures
-        ret,
+        ret == (x@ == y@),
 {
-    if n == 0 {
-        true
-    } else {
-        let nz = NonZero::<u32>::new(n).unwrap();
-        nz.clone() == nz && nz.clone().get() == n
-    }
+    x == y
 }
 
-/// PartialEq/PartialOrd spec impls
 #[cfg(not(any(verus_verify_core, verus_keep_ghost)))]
 #[verifier::external_body]
 #[vcheck]
-pub fn vcheck_nonzero_eq_cmp(a: u32, b: u32) -> (ret: bool)
+pub fn vcheck_nonzero_partial_cmp(x: NonZero<u32>, y: NonZero<u32>) -> (ret: Option<Ordering>)
     ensures
-        ret,
-{
-    if a == 0 || b == 0 {
-        true
-    } else {
-        let (x, y) = (NonZero::<u32>::new(a).unwrap(), NonZero::<u32>::new(b).unwrap());
-        (x == y) == (a == b) && x.partial_cmp(&y) == a.partial_cmp(&b)
-    }
-}
-
-/// BitOr spec impls: `nz | m` and `nz | nz2` agree with primitive `|`
-#[cfg(not(any(verus_verify_core, verus_keep_ghost)))]
-#[verifier::external_body]
-#[vcheck]
-pub fn vcheck_nonzero_bitor(a: u32, b: u32) -> (ret: bool)
-    ensures
-        ret,
-{
-    if a == 0 {
-        true
-    } else {
-        let x = NonZero::<u32>::new(a).unwrap();
-        let prim_ok = (x | b).get() == (a | b);
-        let both_ok = if b != 0 {
-            let y = NonZero::<u32>::new(b).unwrap();
-            (x | y).get() == (a | b)
+        ret == (if x@ < y@ {
+            Some(Ordering::Less)
+        } else if x@ > y@ {
+            Some(Ordering::Greater)
         } else {
-            true
-        };
-        prim_ok && both_ok
-    }
+            Some(Ordering::Equal)
+        }),
+{
+    x.partial_cmp(&y)
+}
+
+#[cfg(not(any(verus_verify_core, verus_keep_ghost)))]
+#[verifier::external_body]
+#[vcheck]
+pub fn vcheck_nonzero_bitor_prim(x: NonZero<u32>, b: u32) -> (ret: NonZero<u32>)
+    ensures
+        ret@ == x@ | b,
+{
+    x | b
+}
+
+#[cfg(not(any(verus_verify_core, verus_keep_ghost)))]
+#[verifier::external_body]
+#[vcheck]
+pub fn vcheck_nonzero_bitor(x: NonZero<u32>, y: NonZero<u32>) -> (ret: NonZero<u32>)
+    ensures
+        ret@ == x@ | y@,
+{
+    x | y
 }
 
 } // verus!

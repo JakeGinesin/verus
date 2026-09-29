@@ -592,39 +592,52 @@ pub broadcast group group_range_axioms {
 
 // Composite vcheck wrappers
 
-/// `Range::contains` == `start <= i && i < end` (obeys_contains holds at u32)
 #[cfg(not(any(verus_verify_core, verus_keep_ghost)))]
 #[verifier::external_body]
 #[vcheck]
-pub fn vcheck_range_contains(start: u32, end: u32, i: u32) -> (ret: bool)
+pub fn vcheck_range_contains(r: Range<u32>, i: u32) -> (ret: bool)
     ensures
-        ret,
+        ret == (r.start <= i && i < r.end),
 {
-    (start..end).contains(&i) == (start <= i && i < end)
+    r.contains(&i)
 }
 
-/// fresh `RangeInclusive` contains `i` iff `start <= i <= end`
 #[cfg(not(any(verus_verify_core, verus_keep_ghost)))]
 #[verifier::external_body]
 #[vcheck]
-pub fn vcheck_range_inclusive_new_contains(start: u32, end: u32, i: u32) -> (ret: bool)
+pub fn vcheck_range_inclusive_contains(r: RangeInclusive<u8>, i: u8) -> (ret: bool)
     ensures
-        ret,
+        ret == (r@.start <= i && if r@.exhausted {
+            i < r@.end
+        } else {
+            i <= r@.end
+        }),
 {
-    RangeInclusive::new(start, end).contains(&i) == (start <= i && i <= end)
+    r.contains(&i)
+}
+
+#[cfg(not(any(verus_verify_core, verus_keep_ghost)))]
+#[verifier::external_body]
+#[vcheck]
+pub fn vcheck_range_inclusive_new(start: u8, end: u8) -> (ret: RangeInclusive<u8>)
+    ensures
+        ret@.start == start,
+        ret@.end == end,
+        !ret@.exhausted,
+{
+    RangeInclusive::new(start, end)
 }
 
 /// `Range` RangeBounds: Included(start) / Excluded(end)
 #[cfg(not(any(verus_verify_core, verus_keep_ghost)))]
 #[verifier::external_body]
 #[vcheck]
-pub fn vcheck_range_bounds(start: u32, end: u32) -> (ret: bool)
+pub fn vcheck_range_bounds(r: Range<u32>) -> (ret: bool)
     ensures
         ret,
 {
-    let r = start..end;
-    matches!(RangeBounds::<u32>::start_bound(&r), Bound::Included(&s) if s == start)
-        && matches!(RangeBounds::<u32>::end_bound(&r), Bound::Excluded(&e) if e == end)
+    matches!(RangeBounds::<u32>::start_bound(&r), Bound::Included(&s) if s == r.start)
+        && matches!(RangeBounds::<u32>::end_bound(&r), Bound::Excluded(&e) if e == r.end)
 }
 
 /// `RangeFull` RangeBounds: Unbounded / Unbounded
@@ -643,12 +656,11 @@ pub fn vcheck_range_full_bounds() -> (ret: bool)
 #[cfg(not(any(verus_verify_core, verus_keep_ghost)))]
 #[verifier::external_body]
 #[vcheck]
-pub fn vcheck_range_from_bounds(start: u32) -> (ret: bool)
+pub fn vcheck_range_from_bounds(r: RangeFrom<u32>) -> (ret: bool)
     ensures
         ret,
 {
-    let r = start..;
-    matches!(RangeBounds::<u32>::start_bound(&r), Bound::Included(&s) if s == start)
+    matches!(RangeBounds::<u32>::start_bound(&r), Bound::Included(&s) if s == r.start)
         && matches!(RangeBounds::<u32>::end_bound(&r), Bound::Unbounded)
 }
 
@@ -656,73 +668,42 @@ pub fn vcheck_range_from_bounds(start: u32) -> (ret: bool)
 #[cfg(not(any(verus_verify_core, verus_keep_ghost)))]
 #[verifier::external_body]
 #[vcheck]
-pub fn vcheck_range_to_bounds(end: u32) -> (ret: bool)
+pub fn vcheck_range_to_bounds(r: RangeTo<u32>) -> (ret: bool)
     ensures
         ret,
 {
-    let r = ..end;
     matches!(RangeBounds::<u32>::start_bound(&r), Bound::Unbounded)
-        && matches!(RangeBounds::<u32>::end_bound(&r), Bound::Excluded(&e) if e == end)
+        && matches!(RangeBounds::<u32>::end_bound(&r), Bound::Excluded(&e) if e == r.end)
 }
 
-/// Exhausted `RangeInclusive`: the `contains` spec's exhausted branch
+/// `RangeInclusive` RangeBounds through exhaustion
 #[cfg(not(any(verus_verify_core, verus_keep_ghost)))]
 #[verifier::external_body]
 #[vcheck]
-pub fn vcheck_range_inclusive_exhausted_contains(start: u8, end: u8, i: u8) -> (ret: bool)
+pub fn vcheck_range_inclusive_bounds(r: RangeInclusive<u8>) -> (ret: bool)
     ensures
         ret,
 {
-    let mut r = RangeInclusive::new(start, end);
-    while r.next().is_some() {}
-    // r is now exhausted with r.start() == r.end() (when start <= end) or untouched
     let (s, e) = (*r.start(), *r.end());
-    r.contains(&i) == (s <= i && i < e)
-        && matches!(RangeBounds::<u8>::start_bound(&r), Bound::Included(&b) if b == s)
-}
-
-/// `RangeInclusive` `end_bound` restated on a possibly-exhausted range
-#[cfg(not(any(verus_verify_core, verus_keep_ghost)))]
-#[verifier::external_body]
-#[vcheck]
-pub fn vcheck_range_inclusive_end_bound_exhausted(start: u8, end: u8) -> (ret: bool)
-    ensures
-        ret,
-{
-    let mut r = RangeInclusive::new(start, end);
-    while r.next().is_some() {}
-    let e = *r.end();
-    if start <= end {
+    let exhausted = r.is_empty() && s <= e;
+    let end_ok = if exhausted {
         matches!(RangeBounds::<u8>::end_bound(&r), Bound::Excluded(&b) if b == e)
     } else {
         matches!(RangeBounds::<u8>::end_bound(&r), Bound::Included(&b) if b == e)
-    }
-}
-
-/// `RangeInclusive` RangeBounds (fresh construction pins the view)
-#[cfg(not(any(verus_verify_core, verus_keep_ghost)))]
-#[verifier::external_body]
-#[vcheck]
-pub fn vcheck_range_inclusive_bounds(start: u32, end: u32) -> (ret: bool)
-    ensures
-        ret,
-{
-    let r = RangeInclusive::new(start, end);
-    matches!(RangeBounds::<u32>::start_bound(&r), Bound::Included(&s) if s == start)
-        && matches!(RangeBounds::<u32>::end_bound(&r), Bound::Included(&e) if e == end)
+    };
+    matches!(RangeBounds::<u8>::start_bound(&r), Bound::Included(&b) if b == s) && end_ok
 }
 
 /// `RangeToInclusive` RangeBounds: Unbounded / Included(end)
 #[cfg(not(any(verus_verify_core, verus_keep_ghost)))]
 #[verifier::external_body]
 #[vcheck]
-pub fn vcheck_range_to_inclusive_bounds(end: u32) -> (ret: bool)
+pub fn vcheck_range_to_inclusive_bounds(r: RangeToInclusive<u32>) -> (ret: bool)
     ensures
         ret,
 {
-    let r = ..=end;
     matches!(RangeBounds::<u32>::start_bound(&r), Bound::Unbounded)
-        && matches!(RangeBounds::<u32>::end_bound(&r), Bound::Included(&e) if e == end)
+        && matches!(RangeBounds::<u32>::end_bound(&r), Bound::Included(&e) if e == r.end)
 }
 
 /// `(Bound<T>, Bound<T>)` RangeBounds: each side projects its component
@@ -763,17 +744,16 @@ macro_rules! vcheck_range_next_specs {
         #[cfg(not(any(verus_verify_core, verus_keep_ghost)))]
         #[verifier::external_body]
         #[vcheck]
-        pub fn $f(start: $t, end: $t) -> (ret: bool)
+        pub fn $f(r: &mut Range<$t>) -> (ret: Option<$t>)
             ensures
-                ret,
+                old(r).start < old(r).end ==> ret == Some(old(r).start)
+                    && final(r).start as int == old(r).start as int + 1
+                    && final(r).end == old(r).end,
+                old(r).start >= old(r).end ==> ret is None
+                    && final(r).start == old(r).start
+                    && final(r).end == old(r).end,
         {
-            let mut r = start..end;
-            let out = r.next();
-            if start < end {
-                out == Some(start) && r.start == start + 1 && r.end == end
-            } else {
-                out == None && r.start == start && r.end == end
-            }
+            r.next()
         }
         } // verus!
     };
@@ -794,24 +774,14 @@ vcheck_range_next_specs!(isize, vcheck_range_next_isize);
 
 verus! {
 
-/// `RangeInclusive::is_empty` matches the view model through exhaustion
 #[cfg(not(any(verus_verify_core, verus_keep_ghost)))]
 #[verifier::external_body]
 #[vcheck]
-pub fn vcheck_range_inclusive_is_empty(start: u8, end: u8, steps: u8) -> (ret: bool)
+pub fn vcheck_range_inclusive_is_empty(r: &RangeInclusive<u8>) -> (res: bool)
     ensures
-        ret,
+        res == (!(r@.start <= r@.end) || r@.exhausted),
 {
-    let mut r = RangeInclusive::new(start, end);
-    let mut exhausted = false;
-    for _ in 0..(steps % 6) {
-        let (s, e) = (*r.start(), *r.end());
-        let n = r.next();
-        if n.is_some() && s == e {
-            exhausted = true;
-        }
-    }
-    r.is_empty() == (!(*r.start() <= *r.end()) || exhausted)
+    r.is_empty()
 }
 
 } // verus!

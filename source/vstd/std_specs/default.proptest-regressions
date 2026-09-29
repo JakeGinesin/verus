@@ -1,0 +1,15 @@
+# Seeds for failure cases proptest has generated in the past. It is
+# automatically read and these particular cases re-run before any
+# novel cases are generated.
+#
+# It is recommended to check this file in to source control so that
+# everyone who runs the test benefits from these saved cases.
+cc 204bdf1f5b52a03dbe9b92311af03bc38255d517ee5b69c4ab77119137f4e298 # shrinks to __vcheck_unused = ()
+# Seeds for failure cases proptest has generated in the past. It is
+# automatically read and these particular cases re-run before any
+# novel cases are generated.
+#
+# It is recommended to check this file in to source control so that
+# everyone who runs the test benefits from these saved cases.
+cc 4fd4a9d069880adc9ad307edb89513998df939f236e4481c0af82224b200371c # shrinks to __vcheck_unused = ()
+cc 41eaae14b7c1a708469dfcf1f16b868ead63e9cdd9c19d61f15092d15d6c3be3 # shrinks to __vcheck_unused = ()
