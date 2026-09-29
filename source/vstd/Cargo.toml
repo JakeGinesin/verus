@@ -19,14 +19,24 @@ categories = ["development-tools"]
 [lib]
 name = "vstd"
 path = "vstd.rs"
+# doc examples are verus syntax, not plain rust
+doctest = false
 
 [dependencies]
-verus_builtin_macros = { version = "=0.0.0-2026-09-20-0158", path = "../builtin_macros" }
+# verus-spec-check overlay of the macros crate
+verus_builtin_macros = { version = "=0.0.0-2026-09-20-0158", path = "../../verus-spec-check/source/builtin_macros_overlay" }
 verus_builtin = { version = "=0.0.0-2026-09-16-0054", path = "../builtin" }
 verus_state_machines_macros = { version = "=0.0.0-2026-09-06-0133", path = "../state_machines_macros" }
 
+# vcheck hook and runtime only for erased builds, not verus_keep_ghost ones
+[target.'cfg(not(verus_keep_ghost))'.dependencies]
+verus_builtin_macros = { version = "=0.0.0-2026-09-20-0158", path = "../../verus-spec-check/source/builtin_macros_overlay", features = ["contrib-hooks"] }
+verus_spec_check = { path = "../../verus-spec-check/source/verus_spec_check" }
+verus_spec_check_vstd_ext = { path = "../../verus-spec-check/source/vstd_ext" }
+
 [features]
-default = ["std"]
+# allocator and nonzero_internals un-gate std_specs vec and nonzero
+default = ["std", "allocator", "nonzero_internals"]
 std = ["alloc"]
 alloc = []
 allocator = []
@@ -44,4 +54,18 @@ unexpected_cfgs = { level = "warn", check-cfg = [
   'cfg(verus_keep_ghost)',
   'cfg(verus_verify_core)',
   'cfg(verus_keep_ghost_body)',
+  'cfg(kani)',
 ] }
+
+[profile.fuzz]
+inherits = "release"
+
+# release speed with overflow checks for long vcheck campaigns
+[profile.vcheck-intense]
+inherits = "release"
+debug-assertions = true
+overflow-checks = true
+
+# single macros crate for local and registry vstd
+[patch.crates-io]
+verus_builtin_macros = { path = "../../verus-spec-check/source/builtin_macros_overlay" }

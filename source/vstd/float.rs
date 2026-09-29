@@ -92,15 +92,38 @@ impl FloatBitsProperties for f64 {
     }
 }
 
+#[vcheck] // vc#1034
 pub assume_specification[ <f32 as Clone>::clone ](f: &f32) -> (res: f32)
     ensures
         res == f,
 ;
 
+#[vcheck] // vc#1033
 pub assume_specification[ <f64 as Clone>::clone ](f: &f64) -> (res: f64)
     ensures
         res == f,
 ;
+
+// vcheck harnesses for the float Clone specs above
+#[cfg(not(any(verus_verify_core, verus_keep_ghost)))]
+#[verifier::external_body]
+#[vcheck]
+pub fn vcheck_f32_clone(f: f32) -> (ret: bool)
+    ensures ret,
+{
+    let res = <f32 as Clone>::clone(&f);
+    res == f || (res.is_nan() && f.is_nan())
+}
+
+#[cfg(not(any(verus_verify_core, verus_keep_ghost)))]
+#[verifier::external_body]
+#[vcheck]
+pub fn vcheck_f64_clone(f: f64) -> (ret: bool)
+    ensures ret,
+{
+    let res = <f64 as Clone>::clone(&f);
+    res == f || (res.is_nan() && f.is_nan())
+}
 
 #[verifier::external_trait_specification]
 pub trait ExIeeeFloatCast<To> {

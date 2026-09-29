@@ -23,6 +23,8 @@
 //! reasoning context by broadcasting the group
 //! `vstd::std_specs::hash::group_hash_axioms`.
 use super::super::prelude::*;
+// iter spec-trait machinery stays ghost-gated
+#[cfg(verus_keep_ghost)]
 use super::iter::IteratorSpec;
 
 use core::alloc::Allocator;
@@ -282,6 +284,7 @@ pub struct ExKeys<'a, Key: 'a, Value: 'a>(Keys<'a, Key, Value>);
 // a prophecy, we need a function that gives us the underlying sequence of the original keys.
 pub uninterp spec fn into_iter_keys<'a, Key, Value>(i: Keys<'a, Key, Value>) -> Seq<Key>;
 
+#[cfg(verus_keep_ghost)]
 impl<'a, K, V> super::iter::IteratorSpecImpl for Keys<'a, K, V> {
     open spec fn obeys_prophetic_iter_laws(&self) -> bool {
         true
@@ -314,6 +317,7 @@ pub struct ExValues<'a, Key: 'a, Value: 'a>(Values<'a, Key, Value>);
 // a prophecy, we need a function that gives us the underlying sequence of the original values.
 pub uninterp spec fn into_iter_values<'a, Key, Value>(i: Values<'a, Key, Value>) -> Seq<Value>;
 
+#[cfg(verus_keep_ghost)]
 impl<'a, K, V> super::iter::IteratorSpecImpl for Values<'a, K, V> {
     open spec fn obeys_prophetic_iter_laws(&self) -> bool {
         true
@@ -348,6 +352,7 @@ pub uninterp spec fn into_iter<'a, Key, Value>(i: hash_map::Iter<'a, Key, Value>
     (Key, Value),
 >;
 
+#[cfg(verus_keep_ghost)]
 impl<'a, K, V> super::iter::IteratorSpecImpl for hash_map::Iter<'a, K, V> {
     open spec fn obeys_prophetic_iter_laws(&self) -> bool {
         true
@@ -568,6 +573,319 @@ pub assume_specification<Key, Value, S, A: Allocator>[ HashMap::<Key, Value, S, 
         len == spec_hash_map_len(m),
 ;
 
+// vcheck wrappers for the guarded mutator specs
+
+#[cfg(not(any(verus_verify_core, verus_keep_ghost)))]
+#[verifier::external_body]
+#[vcheck]
+pub fn vcheck_hash_map_insert(m: &mut HashMap<u32, u32>, k: u32, v: u32) -> (result: Option<u32>)
+    ensures
+        final(m)@ == old(m)@.insert(k, v),
+        result == (if old(m)@.contains_key(k) {
+            Some(old(m)@[k])
+        } else {
+            None::<u32>
+        }),
+{
+    HashMap::<u32, u32>::insert(m, k, v)
+}
+
+#[cfg(not(any(verus_verify_core, verus_keep_ghost)))]
+#[verifier::external_body]
+#[vcheck]
+pub fn vcheck_hash_map_remove(m: &mut HashMap<u32, u32>, k: u32) -> (result: Option<u32>)
+    ensures
+        final(m)@ == old(m)@.remove(k),
+        result == (if old(m)@.contains_key(k) {
+            Some(old(m)@[k])
+        } else {
+            None::<u32>
+        }),
+{
+    HashMap::<u32, u32>::remove(m, &k)
+}
+
+#[cfg(not(any(verus_verify_core, verus_keep_ghost)))]
+#[verifier::external_body]
+#[vcheck]
+pub fn vcheck_hash_map_get(m: HashMap<u32, u32>, k: u32) -> (result: Option<u32>)
+    ensures
+        result == (if m@.contains_key(k) {
+            Some(m@[k])
+        } else {
+            None::<u32>
+        }),
+{
+    HashMap::<u32, u32>::get(&m, &k).copied()
+}
+
+#[cfg(not(any(verus_verify_core, verus_keep_ghost)))]
+#[verifier::external_body]
+#[vcheck]
+pub fn vcheck_hash_map_contains_key(m: HashMap<u32, u32>, k: u32) -> (result: bool)
+    ensures
+        result == m@.contains_key(k),
+{
+    HashMap::<u32, u32>::contains_key(&m, &k)
+}
+
+#[cfg(not(any(verus_verify_core, verus_keep_ghost)))]
+#[verifier::external_body]
+#[vcheck]
+pub fn vcheck_hash_set_insert(m: &mut HashSet<u32>, k: u32) -> (result: bool)
+    ensures
+        final(m)@ == old(m)@.insert(k),
+        result == !old(m)@.contains(k),
+{
+    HashSet::<u32>::insert(m, k)
+}
+
+#[cfg(not(any(verus_verify_core, verus_keep_ghost)))]
+#[verifier::external_body]
+#[vcheck]
+pub fn vcheck_hash_set_remove(m: &mut HashSet<u32>, k: u32) -> (result: bool)
+    ensures
+        final(m)@ == old(m)@.remove(k),
+        result == old(m)@.contains(k),
+{
+    HashSet::<u32>::remove(m, &k)
+}
+
+#[cfg(not(any(verus_verify_core, verus_keep_ghost)))]
+#[verifier::external_body]
+#[vcheck]
+pub fn vcheck_hash_set_contains(m: HashSet<u32>, k: u32) -> (result: bool)
+    ensures
+        result == m@.contains(k),
+{
+    HashSet::<u32>::contains(&m, &k)
+}
+
+/// `HashSet::get` at `Key = Q = u32` (the set's own element equals the probe)
+#[cfg(not(any(verus_verify_core, verus_keep_ghost)))]
+#[verifier::external_body]
+#[vcheck]
+pub fn vcheck_hash_set_get(m: HashSet<u32>, k: u32) -> (ret: bool)
+    ensures
+        ret,
+{
+    m.get(&k).copied() == (if m.contains(&k) { Some(k) } else { None })
+}
+
+/// `HashSet::clear`: post-state contains nothing
+#[cfg(not(any(verus_verify_core, verus_keep_ghost)))]
+#[verifier::external_body]
+#[vcheck]
+pub fn vcheck_hash_set_clear(m: HashSet<u32>, probe: u32) -> (ret: bool)
+    ensures
+        ret,
+{
+    let mut m = m;
+    m.clear();
+    m.len() == 0 && !m.contains(&probe)
+}
+
+/// `with_capacity` / `reserve` for HashMap/HashSet over a bounded (u16) size domain
+#[cfg(not(any(verus_verify_core, verus_keep_ghost)))]
+#[verifier::external_body]
+#[vcheck]
+pub fn vcheck_hash_capacity_reserve_bounded(
+    m: HashMap<u32, u32>,
+    s: HashSet<u32>,
+    cap: u16,
+) -> (ret: bool)
+    ensures
+        ret,
+{
+    let fresh_m: HashMap<u32, u32> = HashMap::with_capacity(cap as usize);
+    let fresh_s: HashSet<u32> = HashSet::with_capacity(cap as usize);
+    let (mut m, mut s) = (m, s);
+    let (m0, s0) = (m.clone(), s.clone());
+    m.reserve(cap as usize);
+    s.reserve(cap as usize);
+    fresh_m.is_empty() && fresh_s.is_empty() && m == m0 && s == s0
+}
+
+/// Box-keyed mutator composite (`Key = Box<u32>`, `Q = u32`)
+#[cfg(not(any(verus_verify_core, verus_keep_ghost)))]
+#[verifier::external_body]
+#[vcheck]
+pub fn vcheck_hash_box_key_ops(model: HashMap<u32, u32>, k: u32, v: u32) -> (ret: bool)
+    ensures
+        ret,
+{
+    let mut m: HashMap<Box<u32>, u32> = model.iter().map(|(k, v)| (Box::new(*k), *v)).collect();
+    let mut s: HashSet<Box<u32>> = model.keys().map(|k| Box::new(*k)).collect();
+    let mut expected: HashMap<u32, u32> = model.clone();
+
+    // insert via boxed key
+    m.insert(Box::new(k), v);
+    s.insert(Box::new(k));
+    expected.insert(k, v);
+    let after_insert = m.len() == expected.len()
+        && expected.iter().all(|(ek, ev)| m.get(ek) == Some(ev))
+        && expected.keys().all(|ek| s.contains(ek));
+    // borrowed-&u32 probe and removal
+    let got = m.get(&k) == Some(&v) && m.contains_key(&k) && s.contains(&k);
+    let removed = m.remove(&k) == Some(v) && s.remove(&k);
+    expected.remove(&k);
+    let after_remove = !m.contains_key(&k) && !s.contains(&k)
+        && m.len() == expected.len()
+        && expected.iter().all(|(ek, ev)| m.get(ek) == Some(ev));
+
+    after_insert && got && removed && after_remove
+}
+
+// Composite vcheck wrappers for the Entry API
+
+/// Occupied-entry flows: `entry` on a present key is Occupied; `key`, `get`, `get_mut`
+#[cfg(not(any(verus_verify_core, verus_keep_ghost)))]
+#[verifier::external_body]
+#[vcheck]
+pub fn vcheck_hash_map_occupied_entry_flows(m: HashMap<u32, u32>, k: u32, v: u32, v2: u32) -> (ret: bool)
+    ensures
+        ret,
+{
+    use std::collections::hash_map::Entry::{Occupied, Vacant};
+    let mut base = m;
+    base.insert(k, v);
+
+    // key/get
+    let mut m1 = base.clone();
+    let f1 = match m1.entry(k) {
+        Occupied(o) => *o.key() == k && *o.get() == v,
+        Vacant(_) => false,
+    };
+    // get_mut write-through
+    let mut m2 = base.clone();
+    let f2 = match m2.entry(k) {
+        Occupied(mut o) => {
+            *o.get_mut() = v2;
+            true
+        },
+        Vacant(_) => false,
+    } && m2.get(&k) == Some(&v2);
+    // insert returns the old value
+    let mut m3 = base.clone();
+    let f3 = match m3.entry(k) {
+        Occupied(mut o) => o.insert(v2) == v,
+        Vacant(_) => false,
+    } && m3.get(&k) == Some(&v2);
+    // remove / remove_entry
+    let mut m4 = base.clone();
+    let f4 = match m4.entry(k) {
+        Occupied(o) => o.remove() == v,
+        Vacant(_) => false,
+    } && !m4.contains_key(&k);
+    let mut m5 = base.clone();
+    let f5 = match m5.entry(k) {
+        Occupied(o) => o.remove_entry() == (k, v),
+        Vacant(_) => false,
+    } && !m5.contains_key(&k);
+    // into_mut write-through
+    let mut m6 = base.clone();
+    let f6 = match m6.entry(k) {
+        Occupied(o) => {
+            let r = o.into_mut();
+            let read = *r == v;
+            *r = v2;
+            read
+        },
+        Vacant(_) => false,
+    } && m6.get(&k) == Some(&v2);
+
+    f1 && f2 && f3 && f4 && f5 && f6
+}
+
+/// Vacant-entry flows: `entry` on an absent key is Vacant; `key`, `into_key`, `insert`
+#[cfg(not(any(verus_verify_core, verus_keep_ghost)))]
+#[verifier::external_body]
+#[vcheck]
+pub fn vcheck_hash_map_vacant_entry_flows(m: HashMap<u32, u32>, k: u32, v: u32, v2: u32) -> (ret: bool)
+    ensures
+        ret,
+{
+    use std::collections::hash_map::Entry::{Occupied, Vacant};
+    let mut base = m;
+    base.remove(&k);
+
+    let mut m1 = base.clone();
+    let f1 = match m1.entry(k) {
+        Vacant(vac) => *vac.key() == k && vac.into_key() == k,
+        Occupied(_) => false,
+    } && !m1.contains_key(&k);
+    let mut m2 = base.clone();
+    let f2 = match m2.entry(k) {
+        Vacant(vac) => {
+            let r = vac.insert(v);
+            let read = *r == v;
+            *r = v2;
+            read
+        },
+        Occupied(_) => false,
+    } && m2.get(&k) == Some(&v2);
+    // Entry::insert_entry (either state): leaves an occupied entry at v
+    let mut m3 = base.clone();
+    let f3 = {
+        let o = m3.entry(k).insert_entry(v);
+        *o.key() == k && *o.get() == v
+    } && m3.get(&k) == Some(&v);
+
+    f1 && f2 && f3
+}
+
+/// `m.entry(k).or_insert(v)`, observed by value: returns the existing value or `v`
+#[cfg(not(any(verus_verify_core, verus_keep_ghost)))]
+#[verifier::external_body]
+#[vcheck]
+pub fn vcheck_hash_map_entry_or_insert(m: &mut HashMap<u32, u32>, k: u32, v: u32) -> (ret: u32)
+    ensures
+        ret == (if old(m)@.contains_key(k) {
+            old(m)@[k]
+        } else {
+            v
+        }),
+        final(m)@ == old(m)@.insert(k, ret),
+{
+    *m.entry(k).or_insert(v)
+}
+
+/// `*m.entry(k).or_insert(v) = v2`: prophecy resolution through the returned `&mut`
+#[cfg(not(any(verus_verify_core, verus_keep_ghost)))]
+#[verifier::external_body]
+#[vcheck]
+pub fn vcheck_hash_map_entry_or_insert_write(m: &mut HashMap<u32, u32>, k: u32, v: u32, v2: u32)
+    ensures
+        final(m)@ == old(m)@.insert(k, v2),
+{
+    let slot = m.entry(k).or_insert(v);
+    *slot = v2;
+}
+
+/// `m.entry(k).key()`, then drop the entry
+#[cfg(not(any(verus_verify_core, verus_keep_ghost)))]
+#[verifier::external_body]
+#[vcheck]
+pub fn vcheck_hash_map_entry_key(m: &mut HashMap<u32, u32>, k: u32) -> (ret: u32)
+    ensures
+        ret == k,
+        final(m)@ == old(m)@,
+{
+    *m.entry(k).key()
+}
+
+// vcheck wrapper: `spec_hash_map_len` is uninterp
+#[cfg(not(any(verus_verify_core, verus_keep_ghost)))]
+#[verifier::external_body]
+#[vcheck]
+pub fn vcheck_hash_map_len(m: HashMap<u32, u32>) -> (len: usize)
+    ensures
+        len == m@.len(),
+{
+    HashMap::<u32, u32>::len(&m)
+}
+
+#[vcheck(Key = u32, Value = u32, S = RandomState, A = alloc::alloc::Global)]
 pub assume_specification<Key, Value, S, A: Allocator>[ HashMap::<Key, Value, S, A>::is_empty ](
     m: &HashMap<Key, Value, S, A>,
 ) -> (res: bool)
@@ -575,6 +893,7 @@ pub assume_specification<Key, Value, S, A: Allocator>[ HashMap::<Key, Value, S, 
         res == m@.is_empty(),
 ;
 
+// (no vcheck: the quantified ensures references `cloned`)
 pub assume_specification<K: Clone, V: Clone, S: Clone, A: Allocator + Clone>[ <HashMap::<
     K,
     V,
@@ -588,6 +907,7 @@ pub assume_specification<K: Clone, V: Clone, S: Clone, A: Allocator + Clone>[ <H
             other@.dom().contains(key) ==> cloned(this@[key], #[trigger] other@[key]),
 ;
 
+#[vcheck(Key = u32, Value = u32)]
 pub assume_specification<Key, Value>[ HashMap::<Key, Value>::new ]() -> (m: HashMap<
     Key,
     Value,
@@ -597,6 +917,7 @@ pub assume_specification<Key, Value>[ HashMap::<Key, Value>::new ]() -> (m: Hash
         m@ == Map::<Key, Value>::empty(),
 ;
 
+#[vcheck(K = u32, V = u32, S = RandomState)]
 pub assume_specification<K, V, S: core::default::Default>[ <HashMap<
     K,
     V,
@@ -811,6 +1132,7 @@ pub assume_specification<
         },
 ;
 
+#[vcheck(Key = u32, Value = u32, S = RandomState, A = alloc::alloc::Global)]
 pub assume_specification<Key, Value, S, A: Allocator>[ HashMap::<Key, Value, S, A>::clear ](
     m: &mut HashMap<Key, Value, S, A>,
 )
@@ -861,6 +1183,7 @@ pub struct ExSetIter<'a, Key: 'a>(hash_set::Iter<'a, Key>);
 // a prophecy, we need a function that gives us the underlying sequence of the original keys.
 pub uninterp spec fn into_iter_hash_keys<'a, Key>(i: hash_set::Iter::<'a, Key>) -> Seq<Key>;
 
+#[cfg(verus_keep_ghost)]
 impl<'a, K> super::iter::IteratorSpecImpl for hash_set::Iter::<'a, K> {
     open spec fn obeys_prophetic_iter_laws(&self) -> bool {
         true
@@ -917,6 +1240,18 @@ pub assume_specification<Key, S, A: Allocator>[ HashSet::<Key, S, A>::len ](
         len == spec_hash_set_len(m),
 ;
 
+// vcheck wrapper composing the uninterp-spec'd len assume_spec above
+#[cfg(not(any(verus_verify_core, verus_keep_ghost)))]
+#[verifier::external_body]
+#[vcheck]
+pub fn vcheck_hash_set_len(m: HashSet<u32>) -> (len: usize)
+    ensures
+        len == m@.len(),
+{
+    HashSet::<u32>::len(&m)
+}
+
+#[vcheck(Key = u32, S = RandomState, A = alloc::alloc::Global)]
 pub assume_specification<Key, S, A: Allocator>[ HashSet::<Key, S, A>::is_empty ](
     m: &HashSet<Key, S, A>,
 ) -> (res: bool)
@@ -924,11 +1259,13 @@ pub assume_specification<Key, S, A: Allocator>[ HashSet::<Key, S, A>::is_empty ]
         res == m@.is_empty(),
 ;
 
+#[vcheck(Key = u32)]
 pub assume_specification<Key>[ HashSet::<Key>::new ]() -> (m: HashSet<Key, RandomState>)
     ensures
         m@ == Set::<Key>::empty(),
 ;
 
+#[vcheck(T = u32, S = RandomState)]
 pub assume_specification<T, S: core::default::Default>[ <HashSet<
     T,
     S,
@@ -1445,6 +1782,70 @@ pub broadcast group group_hash_axioms {
     axiom_has_resolved_occupied_entry,
     axiom_has_resolved_vacant_entry,
     axiom_has_resolved_entry,
+}
+
+} // verus!
+
+verus! {
+
+/// `iter` / `keys` / `values` enumerate the map exactly once per key
+#[cfg(not(any(verus_verify_core, verus_keep_ghost)))]
+#[verifier::external_body]
+#[vcheck]
+pub fn vcheck_hash_map_iters(m: std::collections::HashMap<u32, u32>) -> (ret: bool)
+    ensures
+        ret,
+{
+    let items: Vec<(u32, u32)> = m.iter().map(|(k, v)| (*k, *v)).collect();
+    let keys: Vec<u32> = m.keys().copied().collect();
+    let values: Vec<u32> = m.values().copied().collect();
+    let key_set: std::collections::HashSet<u32> = keys.iter().copied().collect();
+    let item_keys: std::collections::HashSet<u32> = items.iter().map(|p| p.0).collect();
+    let mut vs = values.clone();
+    let mut ms: Vec<u32> = m.values().copied().collect();
+    vs.sort();
+    ms.sort();
+    items.len() == m.len() && item_keys.len() == m.len() && items.iter().all(|(k, v)| m.get(k) == Some(v))
+        && keys.len() == m.len() && key_set.len() == m.len() && keys.iter().all(|k| m.contains_key(k))
+        && values.len() == m.len() && values.iter().all(|v| m.values().any(|x| x == v)) && vs == ms
+}
+
+/// HashSet `iter` enumerates each element exactly once
+#[cfg(not(any(verus_verify_core, verus_keep_ghost)))]
+#[verifier::external_body]
+#[vcheck]
+pub fn vcheck_hash_set_iter(s: std::collections::HashSet<u32>) -> (ret: bool)
+    ensures
+        ret,
+{
+    let xs: Vec<u32> = s.iter().copied().collect();
+    let back: std::collections::HashSet<u32> = xs.iter().copied().collect();
+    xs.len() == s.len() && back == s
+}
+
+/// `DefaultHasher` and same-builder `RandomState` hashers are deterministic in their writes
+#[cfg(not(any(verus_verify_core, verus_keep_ghost)))]
+#[verifier::external_body]
+#[vcheck]
+pub fn vcheck_hasher_determinism(a: Vec<u8>, b: Vec<u8>) -> (ret: bool)
+    ensures
+        ret,
+{
+    let digest = |h: &mut dyn Hasher| {
+        h.write(&a);
+        h.write(&b);
+        h.finish()
+    };
+    let mut h1 = DefaultHasher::new();
+    let mut h2 = DefaultHasher::new();
+    let d1 = digest(&mut h1);
+    let d2 = digest(&mut h2);
+    let rs = RandomState::new();
+    let mut r1 = rs.build_hasher();
+    let mut r2 = rs.build_hasher();
+    let e1 = digest(&mut r1);
+    let e2 = digest(&mut r2);
+    d1 == d2 && h1.finish() == d1 && e1 == e2
 }
 
 } // verus!

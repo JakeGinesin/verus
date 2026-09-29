@@ -1,7 +1,9 @@
+// un-gated so vcheck labels fire under cargo test
 #[cfg(feature = "alloc")]
 pub mod alloc;
 
 pub mod array;
+#[cfg(verus_keep_ghost)]
 pub mod atomic;
 pub mod bits;
 pub mod borrow;
@@ -12,7 +14,9 @@ pub mod control_flow;
 pub mod convert;
 pub mod core;
 pub mod default;
+#[cfg(verus_keep_ghost)]
 pub mod fmt;
+#[cfg(verus_keep_ghost)]
 pub mod iter;
 pub mod manually_drop;
 pub mod maybe_uninit;

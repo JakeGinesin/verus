@@ -46,6 +46,7 @@ pub trait SliceAdditionalExecFns<T> {
 }
 
 impl<T> SliceAdditionalExecFns<T> for [T] {
+    #[vcheck(T = u8)]
     #[verifier::external_body]
     fn set(&mut self, idx: usize, t: T)
         requires
@@ -57,6 +58,7 @@ impl<T> SliceAdditionalExecFns<T> for [T] {
     }
 }
 
+#[vcheck(T = u8)]
 #[verifier::external_body]
 #[cfg_attr(verus_keep_ghost, rustc_diagnostic_item = "verus::vstd::slice::slice_index_get")]
 pub exec fn slice_index_get<T>(slice: &[T], i: usize) -> (out: &T)
@@ -85,10 +87,22 @@ pub assume_specification<T>[ <[T]>::len ](slice: &[T]) -> (len: usize)
         spec_slice_len(slice),
 ;
 
+// vcheck wrapper: `spec_slice_len` is uninterp
+#[cfg(not(any(verus_verify_core, verus_keep_ghost)))]
+#[verifier::external_body]
+#[vcheck]
+pub fn vcheck_slice_len(slice: &[u32]) -> (len: usize)
+    ensures
+        len == slice@.len(),
+{
+    <[u32]>::len(slice)
+}
+
 pub open spec fn spec_slice_is_empty<T>(slice: &[T]) -> bool {
     slice@.len() == 0
 }
 
+#[vcheck(T = u64)]
 #[verifier::when_used_as_spec(spec_slice_is_empty)]
 pub assume_specification<T>[ <[T]>::is_empty ](slice: &[T]) -> (b: bool)
     ensures
@@ -96,6 +110,7 @@ pub assume_specification<T>[ <[T]>::is_empty ](slice: &[T]) -> (b: bool)
 ;
 
 #[cfg(feature = "alloc")]
+#[vcheck(T = u8)]
 #[verifier::external_body]
 pub exec fn slice_to_vec<T: Copy>(slice: &[T]) -> (out: alloc::vec::Vec<T>)
     ensures
@@ -104,12 +119,13 @@ pub exec fn slice_to_vec<T: Copy>(slice: &[T]) -> (out: alloc::vec::Vec<T>)
     slice.to_vec()
 }
 
+#[vcheck(T = u8)]
 #[verifier::external_body]
 pub exec fn slice_subrange<T, 'a>(slice: &'a [T], i: usize, j: usize) -> (out: &'a [T])
     requires
         0 <= i <= j <= slice@.len(),
     ensures
-        out@ == slice@[i..j],
+        out@ == slice@.subrange(i as int, j as int),
 {
     &slice[i..j]
 }
@@ -167,6 +183,7 @@ pub trait ExSliceIndex<T> where T: ?Sized {
     ;
 }
 
+#[vcheck_axiom(T = u8)]
 pub broadcast axiom fn axiom_slice_ext_equal<T>(a1: &[T], a2: &[T])
     ensures
         #[trigger] (a1 =~= a2) <==> (a1.len() == a2.len() && forall|i: int|

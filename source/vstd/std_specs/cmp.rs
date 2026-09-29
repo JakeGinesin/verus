@@ -248,6 +248,25 @@ impl PartialEqSpecImpl for bool {
 
 pub assume_specification[ <bool as PartialEq<bool>>::eq ](x: &bool, y: &bool) -> bool;
 
+// vcheck wrappers for the bare bool comparison specs above
+#[cfg(not(any(verus_verify_core, verus_keep_ghost)))]
+#[verifier::external_body]
+#[vcheck]
+pub fn vcheck_bool_eq(x: bool, y: bool) -> (ret: bool)
+    ensures ret == (x == y),
+{
+    <bool as PartialEq<bool>>::eq(&x, &y)
+}
+
+#[cfg(not(any(verus_verify_core, verus_keep_ghost)))]
+#[verifier::external_body]
+#[vcheck]
+pub fn vcheck_bool_ne(x: bool, y: bool) -> (ret: bool)
+    ensures ret == (x != y),
+{
+    <bool as PartialEq<bool>>::ne(&x, &y)
+}
+
 pub assume_specification[ <bool as PartialEq<bool>>::ne ](x: &bool, y: &bool) -> bool;
 
 /* floating point */
@@ -440,6 +459,41 @@ impl<A: PointeeSized + Ord> OrdSpecImpl for &A {
     open spec fn cmp_spec(&self, other: &Self) -> core::cmp::Ordering {
         A::cmp_spec(*self, *other)
     }
+}
+
+// vcheck wrappers for the shared-reference comparison forwarding specs above
+#[cfg(not(any(verus_verify_core, verus_keep_ghost)))]
+#[verifier::external_body]
+#[vcheck]
+pub fn vcheck_ref_eq_ne(a: u32, b: u32) -> (ret: bool)
+    ensures
+        ret,
+{
+    let (ra, rb) = (&a, &b);
+    (ra == rb) == (a == b) && (ra != rb) == (a != b)
+}
+
+#[cfg(not(any(verus_verify_core, verus_keep_ghost)))]
+#[verifier::external_body]
+#[vcheck]
+pub fn vcheck_ref_partial_ord(a: u32, b: u32) -> (ret: bool)
+    ensures
+        ret,
+{
+    let (ra, rb) = (&a, &b);
+    ra.partial_cmp(&rb) == a.partial_cmp(&b) && (ra < rb) == (a < b) && (ra <= rb) == (a <= b)
+        && (ra > rb) == (a > b) && (ra >= rb) == (a >= b)
+}
+
+#[cfg(not(any(verus_verify_core, verus_keep_ghost)))]
+#[verifier::external_body]
+#[vcheck]
+pub fn vcheck_ref_ord_cmp(a: u32, b: u32) -> (ret: bool)
+    ensures
+        ret,
+{
+    let (ra, rb) = (&a, &b);
+    Ord::cmp(&ra, &rb) == Ord::cmp(&a, &b)
 }
 
 pub assume_specification<'a, A: PointeeSized + Ord>[ <&'a A as Ord>::cmp ](

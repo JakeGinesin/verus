@@ -1291,6 +1291,7 @@ pub broadcast proof fn lemma_seq_index_decreases<A>(s: Seq<A>, i: int)
 }
 
 // TODO: this should be provable
+// #[vcheck_axiom(A = u32)] blocked: vcheck cannot sample Seq params yet
 pub axiom fn axiom_seq_len_decreases<A>(s1: Seq<A>, s2: Seq<A>)
     requires
         s2.len() < s1.len(),

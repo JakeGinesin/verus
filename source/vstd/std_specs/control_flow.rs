@@ -15,6 +15,7 @@ pub struct ExControlFlow<B, C>(ControlFlow<B, C>);
 #[verifier::external_body]
 pub struct ExInfallible(Infallible);
 
+#[vcheck(T = u32, E = u32)] // vc#1187
 pub assume_specification<T, E>[ Result::<T, E>::branch ](result: Result<T, E>) -> (cf: ControlFlow<
     <Result<T, E> as Try>::Residual,
     <Result<T, E> as Try>::Output,
@@ -27,6 +28,7 @@ pub assume_specification<T, E>[ Result::<T, E>::branch ](result: Result<T, E>) -
     no_unwind
 ;
 
+#[vcheck(T = u32)] // vc#1186
 pub assume_specification<T>[ Option::<T>::branch ](option: Option<T>) -> (cf: ControlFlow<
     <Option<T> as Try>::Residual,
     <Option<T> as Try>::Output,
@@ -69,6 +71,64 @@ pub assume_specification<T, E, F: From<E>>[ Result::<T, F>::from_residual ](
 
 pub broadcast group group_control_flow_axioms {
     spec_from_blanket_identity,
+}
+
+// Composite vcheck wrappers
+
+/// `Result::branch`: Ok maps to Continue(v), Err maps to Break(Err(e))
+#[cfg(not(any(verus_verify_core, verus_keep_ghost)))]
+#[verifier::external_body]
+#[vcheck]
+pub fn vcheck_result_branch(result: Result<u32, u8>) -> (ret: bool)
+    ensures
+        ret,
+{
+    let cf = result.branch();
+    match (result, cf) {
+        (Ok(v), ControlFlow::Continue(v2)) => v == v2,
+        (Err(e), ControlFlow::Break(Err(e2))) => e == e2,
+        _ => false,
+    }
+}
+
+/// `Option::branch`: Some maps to Continue(v), None maps to Break(None)
+#[cfg(not(any(verus_verify_core, verus_keep_ghost)))]
+#[verifier::external_body]
+#[vcheck]
+pub fn vcheck_option_branch(option: Option<u32>) -> (ret: bool)
+    ensures
+        ret,
+{
+    let cf = option.branch();
+    match (option, cf) {
+        (Some(v), ControlFlow::Continue(v2)) => v == v2,
+        (None, ControlFlow::Break(None)) => true,
+        _ => false,
+    }
+}
+
+/// `Option::from_residual`: the only residual is `None`
+#[cfg(not(any(verus_verify_core, verus_keep_ghost)))]
+#[verifier::external_body]
+#[vcheck]
+pub fn vcheck_option_from_residual() -> (ret: bool)
+    ensures
+        ret,
+{
+    let out: Option<u32> = Option::from_residual(None::<Infallible>);
+    out.is_none()
+}
+
+/// `Result::from_residual` at `F = E = u8` (identity `From`)
+#[cfg(not(any(verus_verify_core, verus_keep_ghost)))]
+#[verifier::external_body]
+#[vcheck]
+pub fn vcheck_result_from_residual(e: u8) -> (ret: bool)
+    ensures
+        ret,
+{
+    let out: Result<u32, u8> = Result::from_residual(Err(e));
+    out == Err(e)
 }
 
 } // verus!

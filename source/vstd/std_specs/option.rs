@@ -119,6 +119,7 @@ pub open spec fn is_some<T>(option: &Option<T>) -> bool {
     is_variant(option, "Some")
 }
 
+#[vcheck(T = u32)]
 #[verifier::when_used_as_spec(is_some)]
 pub assume_specification<T>[ Option::<T>::is_some ](option: &Option<T>) -> (b: bool)
     ensures
@@ -132,6 +133,7 @@ pub open spec fn is_none<T>(option: &Option<T>) -> bool {
     is_variant(option, "None")
 }
 
+#[vcheck(T = u32)]
 #[verifier::when_used_as_spec(is_none)]
 pub assume_specification<T>[ Option::<T>::is_none ](option: &Option<T>) -> (b: bool)
     ensures
@@ -140,6 +142,7 @@ pub assume_specification<T>[ Option::<T>::is_none ](option: &Option<T>) -> (b: b
 ;
 
 // as_ref
+#[vcheck(T = u32)]
 pub assume_specification<T>[ Option::<T>::as_ref ](option: &Option<T>) -> (a: Option<&T>)
     ensures
         a is Some <==> option is Some,
@@ -156,6 +159,7 @@ pub open spec fn spec_unwrap<T>(option: Option<T>) -> T
     option->0
 }
 
+#[vcheck(T = u32)]
 #[verifier::when_used_as_spec(spec_unwrap)]
 pub assume_specification<T>[ Option::<T>::unwrap ](option: Option<T>) -> (t: T)
     requires
@@ -173,6 +177,7 @@ pub open spec fn spec_unwrap_or<T>(option: Option<T>, default: T) -> T {
     }
 }
 
+#[vcheck(T = u32)]
 #[verifier::when_used_as_spec(spec_unwrap_or)]
 pub assume_specification<T>[ Option::<T>::unwrap_or ](option: Option<T>, default: T) -> (t: T)
     ensures
@@ -189,6 +194,7 @@ pub open spec fn spec_expect<T>(option: Option<T>, msg: &str) -> T
     option->0
 }
 
+#[vcheck(T = u32)]
 #[verifier::when_used_as_spec(spec_expect)]
 pub assume_specification<T>[ Option::<T>::expect ](option: Option<T>, msg: &str) -> (t: T)
     requires
@@ -198,6 +204,7 @@ pub assume_specification<T>[ Option::<T>::expect ](option: Option<T>, msg: &str)
 ;
 
 // take
+#[vcheck(T = u32)]
 pub assume_specification<T>[ Option::<T>::take ](option: &mut Option<T>) -> (t: Option<T>)
     ensures
         t == *old(option),
@@ -251,6 +258,7 @@ pub assume_specification<T, E, F: FnOnce() -> E>[ Option::<T>::ok_or_else ](
 ;
 
 // unwrap_or_default
+// (no vcheck: `T::default.ensures` needs generic call_ensures support)
 pub assume_specification<T: core::default::Default>[ Option::<T>::unwrap_or_default ](
     option: Option<T>,
 ) -> (res: T)
@@ -281,6 +289,7 @@ pub assume_specification<T: Clone>[ <Option<T> as Clone>::clone ](opt: &Option<T
 ;
 
 // PartialEq and Eq
+#[cfg(verus_keep_ghost)]
 impl<T: super::cmp::PartialEqSpec> super::cmp::PartialEqSpecImpl for Option<T> {
     open spec fn obeys_eq_spec() -> bool {
         T::obeys_eq_spec()
@@ -301,7 +310,23 @@ pub assume_specification<T: PartialEq>[ <Option<T> as PartialEq>::eq ](
 ) -> bool
 ;
 
+// vcheck wrapper for the bare `<Option<T> as PartialEq>::eq` spec above
+#[cfg(not(any(verus_verify_core, verus_keep_ghost)))]
+#[verifier::external_body]
+#[vcheck]
+pub fn vcheck_option_eq(x: Option<u32>, y: Option<u32>) -> (ret: bool)
+    ensures
+        ret == (match (x, y) {
+            (Option::<u32>::None, Option::<u32>::None) => true,
+            (Some(a), Some(b)) => a == b,
+            _ => false,
+        }),
+{
+    <Option<u32> as PartialEq>::eq(&x, &y)
+}
+
 // PartialOrd and Ord
+#[cfg(verus_keep_ghost)]
 impl<T: super::cmp::PartialOrdSpec> super::cmp::PartialOrdSpecImpl for Option<T> {
     open spec fn obeys_partial_cmp_spec() -> bool {
         T::obeys_partial_cmp_spec()
@@ -323,6 +348,7 @@ pub assume_specification<T: PartialOrd>[ <Option<T> as PartialOrd>::partial_cmp 
 ) -> Option<core::cmp::Ordering>
 ;
 
+#[cfg(verus_keep_ghost)]
 impl<T: super::cmp::OrdSpec> super::cmp::OrdSpecImpl for Option<T> {
     open spec fn obeys_cmp_spec() -> bool {
         T::obeys_cmp_spec()
@@ -344,6 +370,57 @@ pub assume_specification<T: Ord>[ <Option<T> as Ord>::cmp ](
 ) -> core::cmp::Ordering
 ;
 
+// vcheck wrapper for the bare `<Option<T> as PartialOrd>::partial_cmp` spec above
+#[cfg(not(any(verus_verify_core, verus_keep_ghost)))]
+#[verifier::external_body]
+#[vcheck]
+pub fn vcheck_option_partial_cmp(x: Option<u32>, y: Option<u32>) -> (ret: bool)
+    ensures
+        ret,
+{
+    let expected = match (&x, &y) {
+        (None, None) => core::cmp::Ordering::Equal,
+        (None, Some(_)) => core::cmp::Ordering::Less,
+        (Some(_), None) => core::cmp::Ordering::Greater,
+        (Some(a), Some(b)) => a.cmp(b),
+    };
+    x.partial_cmp(&y) == Some(expected)
+}
+
+/// `Option::cloned` / `Option::clone` at `T = u32`
+#[cfg(not(any(verus_verify_core, verus_keep_ghost)))]
+#[verifier::external_body]
+#[vcheck]
+pub fn vcheck_option_cloned_clone(opt: Option<u32>) -> (ret: bool)
+    ensures
+        ret,
+{
+    let refd: Option<&u32> = opt.as_ref();
+    refd.cloned() == opt && opt.clone() == opt
+}
+
+// vcheck wrapper for the bare `<Option<T> as Ord>::cmp` spec above
+#[cfg(not(any(verus_verify_core, verus_keep_ghost)))]
+#[verifier::external_body]
+#[vcheck]
+pub fn vcheck_option_cmp(x: Option<u32>, y: Option<u32>) -> (ret: core::cmp::Ordering)
+    ensures
+        ret == (match (x, y) {
+            (Option::<u32>::None, Option::<u32>::None) => core::cmp::Ordering::Equal,
+            (Option::<u32>::None, Some(_)) => core::cmp::Ordering::Less,
+            (Some(_), Option::<u32>::None) => core::cmp::Ordering::Greater,
+            (Some(a), Some(b)) => if a < b {
+                core::cmp::Ordering::Less
+            } else if a > b {
+                core::cmp::Ordering::Greater
+            } else {
+                core::cmp::Ordering::Equal
+            },
+        }),
+{
+    <Option<u32> as Ord>::cmp(&x, &y)
+}
+
 // ok_or
 #[verifier::inline]
 pub open spec fn spec_ok_or<T, E>(option: Option<T>, err: E) -> Result<T, E> {
@@ -353,6 +430,7 @@ pub open spec fn spec_ok_or<T, E>(option: Option<T>, err: E) -> Result<T, E> {
     }
 }
 
+#[vcheck(T = u32, E = u32)]
 #[verifier::when_used_as_spec(spec_ok_or)]
 pub assume_specification<T, E>[ Option::ok_or ](option: Option<T>, err: E) -> (res: Result<T, E>)
     ensures
@@ -369,6 +447,7 @@ pub assume_specification<T>[ Option::as_mut ](option: &mut Option<T>) -> (res: O
         }),
 ;
 
+#[vcheck(T = u32)]
 pub assume_specification<T>[ Option::as_slice ](option: &Option<T>) -> (res: &[T])
     ensures
         res@ == (match *option {
@@ -392,6 +471,7 @@ pub assume_specification<T>[ Option::as_mut_slice ](option: &mut Option<T>) -> (
 ;
 
 #[doc(hidden)]
+// (no vcheck: the `&mut T` return aliases the `&mut Option` param)
 pub assume_specification<T>[ Option::insert ](option: &mut Option<T>, value: T) -> (res: &mut T)
     ensures
         *res == value,
@@ -399,6 +479,7 @@ pub assume_specification<T>[ Option::insert ](option: &mut Option<T>, value: T) 
 ;
 
 #[doc(hidden)]
+// (no vcheck: same `&mut T`-return aliasing limitation as `insert`)
 pub assume_specification<T>[ Option::get_or_insert ](option: &mut Option<T>, value: T) -> (res:
     &mut T)
     ensures
@@ -408,5 +489,125 @@ pub assume_specification<T>[ Option::get_or_insert ](option: &mut Option<T>, val
         }),
         *final(option) == Some(*final(res)),
 ;
+
+} // verus!
+
+verus! {
+
+/// `as_mut` exposes the payload and writes through to the option
+#[cfg(not(any(verus_verify_core, verus_keep_ghost)))]
+#[verifier::external_body]
+#[vcheck]
+pub fn vcheck_option_as_mut(o: Option<u32>, w: u32) -> (ret: bool)
+    ensures
+        ret,
+{
+    let mut o2 = o;
+    match o2.as_mut() {
+        None => o.is_none() && o2.is_none(),
+        Some(r) => {
+            let ok = o == Some(*r);
+            *r = w;
+            ok && o2 == Some(w)
+        },
+    }
+}
+
+/// `as_mut_slice` is the zero-or-one element view, and writes flow back
+#[cfg(not(any(verus_verify_core, verus_keep_ghost)))]
+#[verifier::external_body]
+#[vcheck]
+pub fn vcheck_option_as_mut_slice(o: Option<u32>, w: u32) -> (ret: bool)
+    ensures
+        ret,
+{
+    let mut o2 = o;
+    let s = o2.as_mut_slice();
+    let ok = match o {
+        Some(x) => s.len() == 1 && s[0] == x,
+        None => s.is_empty(),
+    };
+    if let Some(e) = s.first_mut() {
+        *e = w;
+    }
+    ok && o2 == o.map(|_| w)
+}
+
+/// `insert` / `get_or_insert` return a reference to the stored value that writes through
+#[cfg(not(any(verus_verify_core, verus_keep_ghost)))]
+#[verifier::external_body]
+#[vcheck]
+pub fn vcheck_option_insert_get_or_insert(o: Option<u32>, v: u32, w: u32, keep: bool) -> (ret: bool)
+    ensures
+        ret,
+{
+    let mut o2 = o;
+    let expect = if keep {
+        match o {
+            Some(x) => x,
+            None => v,
+        }
+    } else {
+        v
+    };
+    let r = if keep {
+        o2.get_or_insert(v)
+    } else {
+        o2.insert(v)
+    };
+    let ok = *r == expect;
+    *r = w;
+    ok && o2 == Some(w)
+}
+
+/// `unwrap_or_default` returns the payload or `u32::default()`
+#[cfg(not(any(verus_verify_core, verus_keep_ghost)))]
+#[verifier::external_body]
+#[vcheck]
+pub fn vcheck_option_unwrap_or_default(o: Option<u32>) -> (ret: bool)
+    ensures
+        ret,
+{
+    o.unwrap_or_default() == match o {
+        Some(x) => x,
+        None => 0,
+    }
+}
+
+/// closure combinators agree with their closure's result
+#[cfg(not(any(verus_verify_core, verus_keep_ghost)))]
+#[verifier::external_body]
+#[vcheck]
+pub fn vcheck_option_closure_ops(o: Option<u32>, k: u32) -> (ret: bool)
+    ensures
+        ret,
+{
+    let f = |x: u32| x.wrapping_add(k);
+    let g = |x: u32|
+        if x % 2 == 0 {
+            Some(x / 2)
+        } else {
+            None
+        };
+    let m = o.map(f);
+    let a = o.and_then(g);
+    let e = o.ok_or_else(|| k);
+    let u = o.unwrap_or_else(|| k);
+    let map_ok = m.is_some() == o.is_some() && (o.is_none() || m == Some(f(o.unwrap())));
+    let and_ok = if o.is_none() {
+        a.is_none()
+    } else {
+        a == g(o.unwrap())
+    };
+    let ok_or_ok = match o {
+        Some(x) => e == Ok(x),
+        None => e == Err(k),
+    };
+    let unwrap_ok = match o {
+        Some(x) => u == x,
+        None => u == k,
+    };
+    map_ok && and_ok && ok_or_ok && unwrap_ok
+}
 
 } // verus!

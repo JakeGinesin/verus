@@ -38,4 +38,19 @@ pub assume_specification<T>[ alloc::boxed::Box::<T>::new_uninit ]() -> alloc::bo
 >
 ;
 
+/// Composite replay for the liballoc-internal box-init specs
+#[cfg(all(feature = "alloc", not(any(verus_verify_core, verus_keep_ghost))))]
+#[verifier::external_body]
+#[vcheck]
+pub fn vcheck_box_init_into_vec(a: u32, b: u32, c: u32) -> (ret: bool)
+    ensures
+        ret,
+{
+    let boxed: alloc::boxed::Box<core::mem::MaybeUninit<[u32; 3]>> =
+        alloc::boxed::Box::new_uninit();
+    let boxed = alloc::intrinsics::write_box_via_move(boxed, [a, b, c]);
+    let v: alloc::vec::Vec<u32> = alloc::boxed::box_assume_init_into_vec_unsafe(boxed);
+    v == [a, b, c]
+}
+
 } // verus!

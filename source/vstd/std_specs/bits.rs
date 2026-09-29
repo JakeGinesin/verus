@@ -44,24 +44,28 @@ pub open spec fn u8_leading_ones(i: u8) -> u32 {
     u8_leading_zeros(!i)
 }
 
+#[vcheck]
 #[verifier::when_used_as_spec(u8_trailing_zeros)]
 pub assume_specification[ u8::trailing_zeros ](i: u8) -> (r: u32)
     ensures
         r == u8_trailing_zeros(i),
 ;
 
+#[vcheck]
 #[verifier::when_used_as_spec(u8_trailing_ones)]
 pub assume_specification[ u8::trailing_ones ](i: u8) -> (r: u32)
     ensures
         r == u8_trailing_ones(i),
 ;
 
+#[vcheck]
 #[verifier::when_used_as_spec(u8_leading_zeros)]
 pub assume_specification[ u8::leading_zeros ](i: u8) -> (r: u32)
     ensures
         r == u8_leading_zeros(i),
 ;
 
+#[vcheck]
 #[verifier::when_used_as_spec(u8_leading_ones)]
 pub assume_specification[ u8::leading_ones ](i: u8) -> (r: u32)
     ensures
@@ -214,24 +218,28 @@ pub open spec fn u16_leading_ones(i: u16) -> u32 {
     u16_leading_zeros(!i)
 }
 
+#[vcheck]
 #[verifier::when_used_as_spec(u16_trailing_zeros)]
 pub assume_specification[ u16::trailing_zeros ](i: u16) -> (r: u32)
     ensures
         r == u16_trailing_zeros(i),
 ;
 
+#[vcheck]
 #[verifier::when_used_as_spec(u16_trailing_ones)]
 pub assume_specification[ u16::trailing_ones ](i: u16) -> (r: u32)
     ensures
         r == u16_trailing_ones(i),
 ;
 
+#[vcheck]
 #[verifier::when_used_as_spec(u16_leading_zeros)]
 pub assume_specification[ u16::leading_zeros ](i: u16) -> (r: u32)
     ensures
         r == u16_leading_zeros(i),
 ;
 
+#[vcheck]
 #[verifier::when_used_as_spec(u16_leading_ones)]
 pub assume_specification[ u16::leading_ones ](i: u16) -> (r: u32)
     ensures
@@ -390,24 +398,28 @@ pub open spec fn u32_leading_ones(i: u32) -> u32 {
     u32_leading_zeros(!i)
 }
 
+#[vcheck]
 #[verifier::when_used_as_spec(u32_trailing_zeros)]
 pub assume_specification[ u32::trailing_zeros ](i: u32) -> (r: u32)
     ensures
         r == u32_trailing_zeros(i),
 ;
 
+#[vcheck]
 #[verifier::when_used_as_spec(u32_trailing_ones)]
 pub assume_specification[ u32::trailing_ones ](i: u32) -> (r: u32)
     ensures
         r == u32_trailing_ones(i),
 ;
 
+#[vcheck]
 #[verifier::when_used_as_spec(u32_leading_zeros)]
 pub assume_specification[ u32::leading_zeros ](i: u32) -> (r: u32)
     ensures
         r == u32_leading_zeros(i),
 ;
 
+#[vcheck]
 #[verifier::when_used_as_spec(u32_leading_ones)]
 pub assume_specification[ u32::leading_ones ](i: u32) -> (r: u32)
     ensures
@@ -567,29 +579,58 @@ pub open spec fn u64_leading_ones(i: u64) -> u32 {
     u64_leading_zeros(!i) as u32
 }
 
+#[vcheck]
 #[verifier::when_used_as_spec(u64_trailing_zeros)]
 pub assume_specification[ u64::trailing_zeros ](i: u64) -> (r: u32)
     ensures
         r == u64_trailing_zeros(i),
 ;
 
+#[vcheck]
 #[verifier::when_used_as_spec(u64_trailing_ones)]
 pub assume_specification[ u64::trailing_ones ](i: u64) -> (r: u32)
     ensures
         r == u64_trailing_ones(i),
 ;
 
+// Exec twins for the opaque recursive spec fns
+#[cfg(not(any(verus_verify_core, verus_keep_ghost)))]
+external_vcheck_provide! {
+    fn u64_leading_zeros(i: u64) -> int {
+        let mut n: u32 = 0;
+        while n < 64 && (i << n) & (1u64 << 63) == 0 {
+            n += 1;
+        }
+        ::verus_spec_check::__vcheck_int::lift(n)
+    }
+}
+
+#[cfg(not(any(verus_verify_core, verus_keep_ghost)))]
+external_vcheck_provide! {
+    fn u64_leading_ones(i: u64) -> u32 {
+        let mut n: u32 = 0;
+        while n < 64 && (!i << n) & (1u64 << 63) == 0 {
+            n += 1;
+        }
+        n
+    }
+}
+
 //#[verifier::when_used_as_spec(u64_leading_zeros)]
+#[vcheck]
 pub assume_specification[ u64::leading_zeros ](i: u64) -> (r: u32)
     ensures
         r as int == u64_leading_zeros(i),
 ;
 
 #[verifier::when_used_as_spec(u64_leading_ones)]
+#[vcheck]
 pub assume_specification[ u64::leading_ones ](i: u64) -> (r: u32)
     ensures
         r == u64_leading_ones(i),
 ;
+
+
 
 pub broadcast proof fn axiom_u64_trailing_zeros(i: u64)
     ensures

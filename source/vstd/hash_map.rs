@@ -335,4 +335,245 @@ pub broadcast group group_hash_map_axioms {
     axiom_string_hash_map_spec_len,
 }
 
+// Composite vcheck wrappers for the `HashMapWithView` / `StringHashMap` method contracts
+
+/// Replay-construct a `HashMapWithView<u32, u32>` from a model
+#[cfg(all(feature = "std", not(any(verus_verify_core, verus_keep_ghost))))]
+#[verifier::external_body]
+fn vcheck_hmwv_build(model: &std::collections::HashMap<u32, u32>) -> HashMapWithView<u32, u32> {
+    let mut m = HashMapWithView::<u32, u32>::new();
+    for (k, v) in model.iter() {
+        m.insert(*k, *v);
+    }
+    m
+}
+
+/// Probe-based map equality: `len` + pointwise `get` over the expected keys
+#[cfg(all(feature = "std", not(any(verus_verify_core, verus_keep_ghost))))]
+#[verifier::external_body]
+fn vcheck_hmwv_matches(
+    m: &HashMapWithView<u32, u32>,
+    expected: &std::collections::HashMap<u32, u32>,
+) -> bool {
+    m.len() == expected.len() && expected.iter().all(|(k, v)| m.get(k) == Some(v))
+}
+
+/// Replay-construct a `StringHashMap<u32>` from a model
+#[cfg(all(feature = "std", not(any(verus_verify_core, verus_keep_ghost))))]
+#[verifier::external_body]
+fn vcheck_shm_build(model: &std::collections::HashMap<String, u32>) -> StringHashMap<u32> {
+    let mut m = StringHashMap::<u32>::new();
+    for (k, v) in model.iter() {
+        m.insert(k.clone(), *v);
+    }
+    m
+}
+
+/// Probe-based map equality for the string-keyed wrapper
+#[cfg(all(feature = "std", not(any(verus_verify_core, verus_keep_ghost))))]
+#[verifier::external_body]
+fn vcheck_shm_matches(
+    m: &StringHashMap<u32>,
+    expected: &std::collections::HashMap<String, u32>,
+) -> bool {
+    m.len() == expected.len() && expected.iter().all(|(k, v)| m.get(k.as_str()) == Some(v))
+}
+
+/// `new` / `is_empty` / `len` on the empty map
+#[cfg(all(feature = "std", not(any(verus_verify_core, verus_keep_ghost))))]
+#[verifier::external_body]
+#[vcheck]
+pub fn vcheck_hmwv_new() -> (ret: bool)
+    ensures ret,
+{
+    let m = HashMapWithView::<u32, u32>::new();
+    m.is_empty() && m.len() == 0
+}
+
+/// `with_capacity` over a bounded size domain (see vec.rs `vcheck_*_bounded`)
+#[cfg(all(feature = "std", not(any(verus_verify_core, verus_keep_ghost))))]
+#[verifier::external_body]
+#[vcheck]
+pub fn vcheck_hmwv_with_capacity_bounded(capacity: u16) -> (ret: bool)
+    ensures ret,
+{
+    let m = HashMapWithView::<u32, u32>::with_capacity(capacity as usize);
+    m.is_empty() && m.len() == 0
+}
+
+/// `reserve` leaves the map unchanged (bounded size domain)
+#[cfg(all(feature = "std", not(any(verus_verify_core, verus_keep_ghost))))]
+#[verifier::external_body]
+#[vcheck]
+pub fn vcheck_hmwv_reserve_bounded(model: std::collections::HashMap<u32, u32>, additional: u16) -> (ret: bool)
+    ensures ret,
+{
+    let mut m = vcheck_hmwv_build(&model);
+    m.reserve(additional as usize);
+    vcheck_hmwv_matches(&m, &model)
+}
+
+/// `is_empty` / `len` agree with the model
+#[cfg(all(feature = "std", not(any(verus_verify_core, verus_keep_ghost))))]
+#[verifier::external_body]
+#[vcheck]
+pub fn vcheck_hmwv_len_is_empty(model: std::collections::HashMap<u32, u32>) -> (ret: bool)
+    ensures ret,
+{
+    let m = vcheck_hmwv_build(&model);
+    m.len() == model.len() && m.is_empty() == model.is_empty()
+}
+
+/// `insert`: post-state is the model plus the binding
+#[cfg(all(feature = "std", not(any(verus_verify_core, verus_keep_ghost))))]
+#[verifier::external_body]
+#[vcheck]
+pub fn vcheck_hmwv_insert(model: std::collections::HashMap<u32, u32>, k: u32, v: u32) -> (ret: bool)
+    ensures ret,
+{
+    let mut m = vcheck_hmwv_build(&model);
+    m.insert(k, v);
+    let mut expected = model;
+    expected.insert(k, v);
+    vcheck_hmwv_matches(&m, &expected)
+}
+
+/// `remove`: returned value matches the old binding; post-state drops it
+#[cfg(all(feature = "std", not(any(verus_verify_core, verus_keep_ghost))))]
+#[verifier::external_body]
+#[vcheck]
+pub fn vcheck_hmwv_remove(model: std::collections::HashMap<u32, u32>, k: u32) -> (ret: bool)
+    ensures ret,
+{
+    let mut m = vcheck_hmwv_build(&model);
+    let out = m.remove(&k);
+    let mut expected = model;
+    let expected_out = expected.remove(&k);
+    out == expected_out && vcheck_hmwv_matches(&m, &expected)
+}
+
+/// `contains_key` / `get` agree with the model
+#[cfg(all(feature = "std", not(any(verus_verify_core, verus_keep_ghost))))]
+#[verifier::external_body]
+#[vcheck]
+pub fn vcheck_hmwv_contains_get(model: std::collections::HashMap<u32, u32>, k: u32) -> (ret: bool)
+    ensures ret,
+{
+    let m = vcheck_hmwv_build(&model);
+    m.contains_key(&k) == model.contains_key(&k)
+        && m.get(&k).copied() == model.get(&k).copied()
+}
+
+/// `clear`: post-state is empty
+#[cfg(all(feature = "std", not(any(verus_verify_core, verus_keep_ghost))))]
+#[verifier::external_body]
+#[vcheck]
+pub fn vcheck_hmwv_clear(model: std::collections::HashMap<u32, u32>) -> (ret: bool)
+    ensures ret,
+{
+    let mut m = vcheck_hmwv_build(&model);
+    m.clear();
+    m.is_empty() && m.len() == 0
+}
+
+/// `union_prefer_right`: post-state is the left model overwritten by the right
+#[cfg(all(feature = "std", not(any(verus_verify_core, verus_keep_ghost))))]
+#[verifier::external_body]
+#[vcheck]
+pub fn vcheck_hmwv_union_prefer_right(
+    left: std::collections::HashMap<u32, u32>,
+    right: std::collections::HashMap<u32, u32>,
+) -> (ret: bool)
+    ensures ret,
+{
+    let mut m = vcheck_hmwv_build(&left);
+    let other = vcheck_hmwv_build(&right);
+    m.union_prefer_right(other);
+    let mut expected = left;
+    expected.extend(right.into_iter());
+    vcheck_hmwv_matches(&m, &expected)
+}
+
+/// StringHashMap: `new` / `is_empty` / `len` on the empty map
+#[cfg(all(feature = "std", not(any(verus_verify_core, verus_keep_ghost))))]
+#[verifier::external_body]
+#[vcheck]
+pub fn vcheck_shm_new() -> (ret: bool)
+    ensures ret,
+{
+    let m = StringHashMap::<u32>::new();
+    m.is_empty() && m.len() == 0
+}
+
+/// StringHashMap `insert`
+#[cfg(all(feature = "std", not(any(verus_verify_core, verus_keep_ghost))))]
+#[verifier::external_body]
+#[vcheck]
+pub fn vcheck_shm_insert(model: std::collections::HashMap<String, u32>, k: String, v: u32) -> (ret: bool)
+    ensures ret,
+{
+    let mut m = vcheck_shm_build(&model);
+    m.insert(k.clone(), v);
+    let mut expected = model;
+    expected.insert(k, v);
+    vcheck_shm_matches(&m, &expected)
+}
+
+/// StringHashMap `remove` (returns nothing; post-state only)
+#[cfg(all(feature = "std", not(any(verus_verify_core, verus_keep_ghost))))]
+#[verifier::external_body]
+#[vcheck]
+pub fn vcheck_shm_remove(model: std::collections::HashMap<String, u32>, k: String) -> (ret: bool)
+    ensures ret,
+{
+    let mut m = vcheck_shm_build(&model);
+    m.remove(k.as_str());
+    let mut expected = model;
+    expected.remove(&k);
+    vcheck_shm_matches(&m, &expected)
+}
+
+/// StringHashMap `contains_key` / `get` / `len` / `is_empty`
+#[cfg(all(feature = "std", not(any(verus_verify_core, verus_keep_ghost))))]
+#[verifier::external_body]
+#[vcheck]
+pub fn vcheck_shm_contains_get(model: std::collections::HashMap<String, u32>, k: String) -> (ret: bool)
+    ensures ret,
+{
+    let m = vcheck_shm_build(&model);
+    m.len() == model.len() && m.is_empty() == model.is_empty()
+        && m.contains_key(k.as_str()) == model.contains_key(&k)
+        && m.get(k.as_str()).copied() == model.get(&k).copied()
+}
+
+/// StringHashMap `clear`
+#[cfg(all(feature = "std", not(any(verus_verify_core, verus_keep_ghost))))]
+#[verifier::external_body]
+#[vcheck]
+pub fn vcheck_shm_clear(model: std::collections::HashMap<String, u32>) -> (ret: bool)
+    ensures ret,
+{
+    let mut m = vcheck_shm_build(&model);
+    m.clear();
+    m.is_empty() && m.len() == 0
+}
+
+/// StringHashMap `union_prefer_right`
+#[cfg(all(feature = "std", not(any(verus_verify_core, verus_keep_ghost))))]
+#[verifier::external_body]
+#[vcheck]
+pub fn vcheck_shm_union_prefer_right(
+    left: std::collections::HashMap<String, u32>,
+    right: std::collections::HashMap<String, u32>,
+) -> (ret: bool)
+    ensures ret,
+{
+    let mut m = vcheck_shm_build(&left);
+    let other = vcheck_shm_build(&right);
+    m.union_prefer_right(other);
+    let mut expected = left;
+    expected.extend(right.into_iter());
+    vcheck_shm_matches(&m, &expected)
+}
+
 } // verus!

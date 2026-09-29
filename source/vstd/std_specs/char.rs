@@ -1,10 +1,38 @@
 use super::super::prelude::*;
+// spec fns are erased under plain `cargo build` / `cargo test`
+#[cfg(verus_keep_ghost)]
 use super::super::utf8::encode_scalar;
 
 verus! {
 
+// Trusted exec twin of the cross-module (`utf8.rs`) spec fn `encode_scalar`
+#[cfg(not(any(verus_verify_core, verus_keep_ghost)))]
+external_vcheck_provide! {
+    fn encode_scalar(scalar: u32) -> Seq<u8> {
+        if scalar <= 0x7F {
+            vec![scalar as u8]
+        } else if scalar <= 0x7FF {
+            vec![0xC0 | (scalar >> 6) as u8, 0x80 | (scalar & 0x3F) as u8]
+        } else if scalar <= 0xFFFF {
+            vec![
+                0xE0 | (scalar >> 12) as u8,
+                0x80 | ((scalar >> 6) & 0x3F) as u8,
+                0x80 | (scalar & 0x3F) as u8,
+            ]
+        } else {
+            vec![
+                0xF0 | (scalar >> 18) as u8,
+                0x80 | ((scalar >> 12) & 0x3F) as u8,
+                0x80 | ((scalar >> 6) & 0x3F) as u8,
+                0x80 | (scalar & 0x3F) as u8,
+            ]
+        }
+    }
+}
+
 /// The byte width of `c`'s UTF-8 encoding, using the same scalar-value
 /// boundaries as [`encode_scalar`].
+#[vcheck]
 #[verifier::allow_in_spec]
 pub assume_specification[ char::len_utf8 ](c: char) -> usize
     returns
@@ -22,6 +50,7 @@ pub open spec fn is_white_space(c: char) -> bool {
         == '\u{3000}'
 }
 
+#[vcheck]
 #[verifier::allow_in_spec]
 pub assume_specification[ char::is_whitespace ](c: char) -> (res: bool)
     returns

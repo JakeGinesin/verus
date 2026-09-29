@@ -56,4 +56,34 @@ pub assume_specification<T>[ MaybeUninit::<T>::assume_init_mut ](m: &mut MaybeUn
     opens_invariants none
     no_unwind;
 
+// vcheck wrappers
+
+/// `new` + `assume_init`/`assume_init_ref` round-trips at u32
+#[cfg(not(any(verus_verify_core, verus_keep_ghost)))]
+#[verifier::external_body]
+#[vcheck]
+pub fn vcheck_maybe_uninit_new_assume_init(v: u32) -> (ret: bool)
+    ensures
+        ret,
+{
+    let m = MaybeUninit::new(v);
+    let by_ref = *unsafe { m.assume_init_ref() };
+    by_ref == v && unsafe { m.assume_init() } == v
+}
+
+/// `assume_init_mut`: reads the initialized value and writes through
+#[cfg(not(any(verus_verify_core, verus_keep_ghost)))]
+#[verifier::external_body]
+#[vcheck]
+pub fn vcheck_maybe_uninit_assume_init_mut(v: u32, v2: u32) -> (ret: bool)
+    ensures
+        ret,
+{
+    let mut m = MaybeUninit::new(v);
+    let r = unsafe { m.assume_init_mut() };
+    let read_ok = *r == v;
+    *r = v2;
+    read_ok && unsafe { m.assume_init() } == v2
+}
+
 }

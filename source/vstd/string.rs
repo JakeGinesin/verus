@@ -104,7 +104,21 @@ pub broadcast proof fn is_ascii_concat(s1: &str, s2: &str, s3: &str)
     }
 }
 
+// Trusted exec twin of the `is_ascii` spec fn
+#[cfg(not(any(verus_verify_core, verus_keep_ghost)))]
+external_vcheck_provide! {
+    fn is_ascii(s: &str) -> bool {
+        for c in s.chars() {
+            if c > '\u{7f}' {
+                return false;
+            }
+        }
+        true
+    }
+}
+
 #[cfg(not(verus_verify_core))]
+#[vcheck]
 #[verifier::when_used_as_spec(is_ascii)]
 pub assume_specification[ str::is_ascii ](s: &str) -> (b: bool)
     ensures
@@ -115,18 +129,21 @@ pub assume_specification[ str::is_ascii ](s: &str) -> (b: bool)
 use crate::alloc::borrow::ToOwned;
 
 #[cfg(all(feature = "alloc", not(verus_verify_core)))]
+#[vcheck]
 pub assume_specification[ str::to_owned ](s: &str) -> (res: String)
     ensures
         s@ == res@,
 ;
 
 #[cfg(not(verus_verify_core))]
+#[vcheck]
 pub assume_specification[ str::as_bytes ](s: &str) -> (b: &[u8])
     ensures
         b@ == s.spec_bytes(),
 ;
 
 #[cfg(not(verus_verify_core))]
+#[vcheck]
 #[verifier::allow_in_spec]
 pub assume_specification[ str::len ](s: &str) -> usize
     returns
@@ -134,13 +151,45 @@ pub assume_specification[ str::len ](s: &str) -> usize
 ;
 
 #[cfg(not(verus_verify_core))]
+#[vcheck]
 #[verifier::allow_in_spec]
 pub assume_specification[ str::is_empty ](s: &str) -> bool
     returns
         s@.len() == 0,
 ;
 
+// Trusted exec twin of the cross-module (`utf8.rs`) spec fn `is_char_boundary`
+#[cfg(not(any(verus_verify_core, verus_keep_ghost)))]
+external_vcheck_provide! {
+    fn is_char_boundary(bytes: Seq<u8>, index: usize) -> bool {
+        let mut start: usize = 0;
+        let mut idx: i64 = index as i64;
+        loop {
+            if idx == 0 {
+                return true;
+            }
+            let remaining: i64 = (bytes.len() - start) as i64;
+            if idx < 0 || remaining < idx {
+                return false;
+            }
+            let b = bytes[start];
+            let w: usize = if b <= 0x7f {
+                1
+            } else if 0xc0 <= b && b <= 0xdf {
+                2
+            } else if 0xe0 <= b && b <= 0xef {
+                3
+            } else {
+                4
+            };
+            start += w;
+            idx -= w as i64;
+        }
+    }
+}
+
 #[cfg(not(verus_verify_core))]
+#[vcheck]
 #[verifier::allow_in_spec]
 pub assume_specification[ str::is_char_boundary ](s: &str, index: usize) -> bool
     returns
@@ -148,21 +197,50 @@ pub assume_specification[ str::is_char_boundary ](s: &str, index: usize) -> bool
 ;
 
 #[cfg(not(verus_verify_core))]
+#[vcheck]
 pub assume_specification[ str::split_at ](s: &str, mid: usize) -> (res: (&str, &str))
     requires
         is_char_boundary(s.spec_bytes(), mid as int),
     ensures
-        res.0.spec_bytes() =~= s.spec_bytes()[..mid],
-        res.1.spec_bytes() =~= s.spec_bytes()[mid..],
+        res.0.spec_bytes() =~= s.spec_bytes().take(mid as int),
+        res.1.spec_bytes() =~= s.spec_bytes().skip(mid as int),
 ;
 
+// Exec twin for `valid_utf8` (utf8.rs)
+#[cfg(not(any(verus_verify_core, verus_keep_ghost)))]
+external_vcheck_provide! {
+    fn valid_utf8(bytes: Seq<u8>) -> bool {
+        core::str::from_utf8(bytes).is_ok()
+    }
+}
+
 #[cfg(not(verus_verify_core))]
+#[vcheck]
 pub assume_specification[ str::from_utf8_unchecked ](v: &[u8]) -> (res: &str)
     requires
         valid_utf8(v@),
     ensures
         res.spec_bytes() =~= v@,
 ;
+
+/// `substring_ascii`: ASCII-guarded byte-range slicing matches the view subrange
+#[cfg(not(any(verus_verify_core, verus_keep_ghost)))]
+#[verifier::external_body]
+#[vcheck]
+pub fn vcheck_substring_ascii(s: &str, from: u8, to: u8) -> (ret: bool)
+    ensures
+        ret,
+{
+    if !s.is_ascii() {
+        return true;  // precondition excluded
+    }
+    let (from, to) = (from as usize, to as usize);
+    if !(from <= to && to <= s.len()) {
+        return true;  // precondition excluded
+    }
+    let sub = s.substring_ascii(from, to);
+    sub.as_bytes() == &s.as_bytes()[from..to] && sub.is_ascii()
+}
 
 #[cfg(all(feature = "alloc", not(verus_verify_core)))]
 pub uninterp spec fn to_string_from_display_ensures<T: core::fmt::Display + ?Sized>(
@@ -209,6 +287,7 @@ impl StrSliceExecFns for str {
     /// It is more useful to talk about the length of characters and therefore this function was added.
     /// Please note that this function counts the unicode variation selectors as characters.
     /// Warning: O(n)
+    #[vcheck]
     #[verifier::external_body]
     fn unicode_len(&self) -> (l: usize)
         ensures
@@ -218,6 +297,7 @@ impl StrSliceExecFns for str {
     }
 
     /// Warning: O(n) not O(1) due to unicode decoding needed
+    #[vcheck]
     #[verifier::external_body]
     fn get_char(&self, i: usize) -> (c: char)
         requires
@@ -228,6 +308,7 @@ impl StrSliceExecFns for str {
         self.chars().nth(i).unwrap()
     }
 
+    // (no direct vcheck: the requires uses the method-form spec call `self.is_ascii()`)
     #[verifier::external_body]
     fn substring_ascii<'a>(&'a self, from: usize, to: usize) -> (ret: &'a str)
         requires
@@ -241,12 +322,13 @@ impl StrSliceExecFns for str {
         &self[from..to]
     }
 
+    #[vcheck]
     #[verifier::external_body]
     fn substring_char<'a>(&'a self, from: usize, to: usize) -> (ret: &'a str)
         requires
             from <= to <= self@.len(),
         ensures
-            ret@ == self@[from..to],
+            ret@ == self@.subrange(from as int, to as int),
     {
         let mut char_pos = 0;
         let mut byte_start = None;
@@ -364,6 +446,7 @@ pub open spec fn string_is_ascii(s: &String) -> bool {
 }
 
 #[cfg(all(feature = "alloc", not(verus_verify_core)))]
+#[vcheck]
 pub assume_specification<'a>[ String::as_str ](s: &'a String) -> (res: &'a str)
     ensures
         res@ == s@,
@@ -371,36 +454,42 @@ pub assume_specification<'a>[ String::as_str ](s: &'a String) -> (res: &'a str)
 
 // same as above
 #[cfg(all(feature = "alloc", not(verus_verify_core)))]
+#[vcheck]
 pub assume_specification<'a>[ <String as core::ops::Deref>::deref ](s: &'a String) -> (res: &'a str)
     ensures
         res@ == s@,
 ;
 
 #[cfg(all(feature = "alloc", not(verus_verify_core)))]
+#[vcheck]
 pub assume_specification[ <String as Clone>::clone ](s: &String) -> (res: String)
     ensures
         res == s,
 ;
 
 #[cfg(all(feature = "alloc", not(verus_verify_core)))]
+#[vcheck]
 pub assume_specification[ <String as PartialEq>::eq ](s: &String, other: &String) -> (res: bool)
     ensures
         res == (s@ == other@),
 ;
 
 #[cfg(all(feature = "alloc", not(verus_verify_core)))]
+#[vcheck]
 pub assume_specification[ String::new ]() -> (res: String)
     ensures
         res@ == Seq::<char>::empty(),
 ;
 
 #[cfg(all(feature = "alloc", not(verus_verify_core)))]
+#[vcheck] // vc#1135
 pub assume_specification[ String::push ](s: &mut String, c: char)
     ensures
         final(s)@ == old(s)@.push(c),
 ;
 
 #[cfg(all(feature = "alloc", not(verus_verify_core)))]
+#[vcheck] // vc#1134
 pub assume_specification[ String::pop ](s: &mut String) -> (res: Option<char>)
     ensures
         old(s)@.len() == 0 ==> res is None && final(s)@ == old(s)@,
@@ -408,24 +497,28 @@ pub assume_specification[ String::pop ](s: &mut String) -> (res: Option<char>)
 ;
 
 #[cfg(all(feature = "alloc", not(verus_verify_core)))]
+#[vcheck] // vc#1133
 pub assume_specification[ String::push_str ](s: &mut String, other: &str)
     ensures
         final(s)@ == old(s)@ + other@,
 ;
 
 #[cfg(all(feature = "alloc", not(verus_verify_core)))]
+#[vcheck] // vc#1132
 pub assume_specification[ String::is_empty ](s: &String) -> (res: bool)
     ensures
         res == (s@.len() == 0),
 ;
 
 #[cfg(all(feature = "alloc", not(verus_verify_core)))]
+#[vcheck] // vc#1131
 pub assume_specification[ String::clear ](s: &mut String)
     ensures
         final(s)@ == Seq::<char>::empty(),
 ;
 
 #[cfg(all(feature = "alloc", not(verus_verify_core)))]
+#[vcheck]
 pub assume_specification[ <String as core::default::Default>::default ]() -> (r: String)
     ensures
         r@ == Seq::<char>::empty(),
@@ -460,6 +553,7 @@ pub trait StringExecFns: Sized {
 
 #[cfg(all(feature = "alloc", not(verus_verify_core)))]
 impl StringExecFns for String {
+    #[vcheck]
     #[verifier::external_body]
     fn from_str<'a>(s: &'a str) -> (ret: String)
         ensures
@@ -468,6 +562,7 @@ impl StringExecFns for String {
         s.to_string()
     }
 
+    #[vcheck]
     #[verifier::external_body]
     fn append<'a, 'b>(&'a mut self, other: &'b str)
         ensures
@@ -476,6 +571,7 @@ impl StringExecFns for String {
         *self += other;
     }
 
+    #[vcheck]
     #[verifier::external_body]
     fn concat<'b>(self, other: &'b str) -> (ret: String)
         ensures
@@ -961,5 +1057,84 @@ impl<I: SliceIndexSpec<str>> super::std_specs::core::IndexSpecImpl<I> for str {
 }
 
 pub use super::view::View;
+
+} // verus!
+
+verus! {
+
+/// `str::get` on every range kind agrees with the SliceIndexSpec bounds model
+#[cfg(not(any(verus_verify_core, verus_keep_ghost)))]
+#[verifier::external_body]
+#[vcheck]
+pub fn vcheck_str_get_ranges(s: String, kind: u8, a: u8, b: u8, steps: u8) -> (ret: bool)
+    ensures
+        ret,
+{
+    let len = s.len();
+    let a = a as usize % (len + 3);
+    let b = b as usize % (len + 3);
+    let bound = |k: u8, x: usize| match k % 3 {
+        0 => core::ops::Bound::Included(x),
+        1 => core::ops::Bound::Excluded(x),
+        _ => core::ops::Bound::Unbounded,
+    };
+    let (lo, hi, got): (i128, i128, Option<&str>) = match kind % 7 {
+        0 => (a as i128, b as i128, s.get(a..b)),
+        1 => (0, b as i128, s.get(..b)),
+        2 => (a as i128, len as i128, s.get(a..)),
+        3 => (0, len as i128, s.get(..)),
+        4 => {
+            let mut r = a..=b;
+            for _ in 0..(steps % 8) {
+                r.next();
+            }
+            let exhausted = r.is_empty() && r.start() <= r.end();
+            let hi = if exhausted {
+                *r.end() as i128
+            } else {
+                *r.end() as i128 + 1
+            };
+            (*r.start() as i128, hi, s.get(r))
+        },
+        5 => (0, b as i128 + 1, s.get(..=b)),
+        _ => {
+            let (sb, eb) = (bound(steps, a), bound(steps / 3, b));
+            let lo = match sb {
+                core::ops::Bound::Included(x) => x as i128,
+                core::ops::Bound::Excluded(x) => x as i128 + 1,
+                core::ops::Bound::Unbounded => 0,
+            };
+            let hi = match eb {
+                core::ops::Bound::Included(x) => x as i128 + 1,
+                core::ops::Bound::Excluded(x) => x as i128,
+                core::ops::Bound::Unbounded => len as i128,
+            };
+            (lo, hi, s.get((sb, eb)))
+        },
+    };
+    let in_bounds = 0 <= lo && lo <= hi && hi <= len as i128 && s.is_char_boundary(lo as usize)
+        && s.is_char_boundary(hi as usize);
+    match got {
+        Some(x) => in_bounds && x.as_bytes() == &s.as_bytes()[lo as usize..hi as usize],
+        None => !in_bounds,
+    }
+}
+
+} // verus!
+
+verus! {
+
+/// `str::chars` yields the char view and `to_string` on str preserves it
+#[cfg(not(any(verus_verify_core, verus_keep_ghost)))]
+#[verifier::external_body]
+#[vcheck]
+pub fn vcheck_str_chars_to_string(s: String) -> (ret: bool)
+    ensures
+        ret,
+{
+    let cs: Vec<char> = s.as_str().chars().collect();
+    let t = s.as_str().to_string();
+    cs == s.chars().collect::<Vec<char>>() && t == s && t.chars().count() == cs.len()
+}
 
 } // verus!

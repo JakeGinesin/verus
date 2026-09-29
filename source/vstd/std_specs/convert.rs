@@ -180,3 +180,107 @@ impl_int_try_from_spec! { i32 => [u8 u16 u32 u64 u128 i8 i16 usize isize] }
 impl_int_try_from_spec! { i64 => [u8 u16 u32 u64 u128 i8 i16 i32 usize isize] }
 impl_int_try_from_spec! { i128 => [u8 u16 u32 u64 u128 i8 i16 i32 i64 usize isize] }
 impl_int_try_from_spec! { isize => [u8 u16 u32 u64 u128 i8 i16 i32 i64 i128 usize] }
+
+// vcheck harnesses for the trusted `TryFrom` integer specs
+macro_rules! vcheck_try_from_test {
+    ($name:ident, $from:ty => $to:ty) => {
+        verus! {
+            #[cfg(not(any(verus_verify_core, verus_keep_ghost)))]
+            #[verifier::external_body]
+            #[vcheck]
+            pub fn $name(a: $from) -> (ret: Option<$to>)
+                // Full range-decision spec
+                ensures
+                    (((<$to>::MIN as int) <= (a as int)) && ((a as int) <= (<$to>::MAX as int)))
+                        ==> (ret is Some && (ret->Some_0 as int) == (a as int)),
+                    !(((<$to>::MIN as int) <= (a as int)) && ((a as int) <= (<$to>::MAX as int)))
+                        ==> (ret is None),
+            {
+                // `.ok()` maps Ok(v) -> Some(v), Err(_) -> None
+                <$to>::try_from(a).ok()
+            }
+        }
+    };
+}
+
+// Narrowing (same signedness)
+vcheck_try_from_test!(vcheck_tf_u16_u8, u16 => u8);
+vcheck_try_from_test!(vcheck_tf_u32_u8, u32 => u8);
+vcheck_try_from_test!(vcheck_tf_u32_u16, u32 => u16);
+vcheck_try_from_test!(vcheck_tf_u64_u32, u64 => u32);
+vcheck_try_from_test!(vcheck_tf_u128_u64, u128 => u64);
+vcheck_try_from_test!(vcheck_tf_i16_i8, i16 => i8);
+vcheck_try_from_test!(vcheck_tf_i32_i8, i32 => i8);
+vcheck_try_from_test!(vcheck_tf_i64_i32, i64 => i32);
+vcheck_try_from_test!(vcheck_tf_i128_i64, i128 => i64);
+
+// Sign-crossing: signed -> unsigned (negatives must be rejected)
+vcheck_try_from_test!(vcheck_tf_i8_u8, i8 => u8);
+vcheck_try_from_test!(vcheck_tf_i32_u8, i32 => u8);
+vcheck_try_from_test!(vcheck_tf_i32_u32, i32 => u32);
+vcheck_try_from_test!(vcheck_tf_i64_u64, i64 => u64);
+
+// Sign-crossing: unsigned -> signed (large positives must be rejected)
+vcheck_try_from_test!(vcheck_tf_u8_i8, u8 => i8);
+vcheck_try_from_test!(vcheck_tf_u32_i32, u32 => i32);
+vcheck_try_from_test!(vcheck_tf_u64_i64, u64 => i64);
+
+// Platform-dependent widths
+vcheck_try_from_test!(vcheck_tf_usize_u32, usize => u32);
+vcheck_try_from_test!(vcheck_tf_isize_i32, isize => i32);
+vcheck_try_from_test!(vcheck_tf_u64_usize, u64 => usize);
+vcheck_try_from_test!(vcheck_tf_i64_isize, i64 => isize);
+
+
+// vcheck harnesses for the trusted widening `From` integer specs
+macro_rules! vcheck_from_test {
+    ($name:ident, $from:ty => $to:ty) => {
+        verus! {
+            #[cfg(not(any(verus_verify_core, verus_keep_ghost)))]
+            #[verifier::external_body]
+            #[vcheck]
+            pub fn $name(a: $from) -> (ret: $to)
+                ensures
+                    (ret as $from) == a,
+            {
+                <$to as core::convert::From<$from>>::from(a)
+            }
+        }
+    };
+}
+
+vcheck_from_test!(vcheck_from_u8_u16, u8 => u16);
+vcheck_from_test!(vcheck_from_u8_u32, u8 => u32);
+vcheck_from_test!(vcheck_from_u8_u64, u8 => u64);
+vcheck_from_test!(vcheck_from_u8_u128, u8 => u128);
+vcheck_from_test!(vcheck_from_u16_u32, u16 => u32);
+vcheck_from_test!(vcheck_from_u16_u64, u16 => u64);
+vcheck_from_test!(vcheck_from_u32_u64, u32 => u64);
+vcheck_from_test!(vcheck_from_u32_u128, u32 => u128);
+vcheck_from_test!(vcheck_from_u64_u128, u64 => u128);
+vcheck_from_test!(vcheck_from_i8_i16, i8 => i16);
+vcheck_from_test!(vcheck_from_i8_i32, i8 => i32);
+vcheck_from_test!(vcheck_from_i8_i64, i8 => i64);
+vcheck_from_test!(vcheck_from_i16_i32, i16 => i32);
+vcheck_from_test!(vcheck_from_i16_i64, i16 => i64);
+vcheck_from_test!(vcheck_from_i32_i64, i32 => i64);
+vcheck_from_test!(vcheck_from_i32_i128, i32 => i128);
+vcheck_from_test!(vcheck_from_i64_i128, i64 => i128);
+
+verus! {
+
+/// blanket `Into` / `TryInto` / `TryFrom` agree with the underlying `From` / `TryFrom`
+#[cfg(not(any(verus_verify_core, verus_keep_ghost)))]
+#[verifier::external_body]
+#[vcheck]
+pub fn vcheck_convert_blankets(a: u8, b: u32) -> (ret: bool)
+    ensures
+        ret,
+{
+    let i: u32 = a.into();
+    let t: Result<u8, core::num::TryFromIntError> = b.try_into();
+    let f: Result<u64, core::convert::Infallible> = <u64 as TryFrom<u32>>::try_from(b);
+    i == <u32 as From<u8>>::from(a) && t == <u8 as TryFrom<u32>>::try_from(b) && f == Ok(b as u64)
+}
+
+} // verus!

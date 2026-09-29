@@ -23,11 +23,13 @@ pub fn ex_clone_clone_from<T: Clone>(a: &mut T, b: &T)
 }
 */
 
+#[vcheck]
 pub assume_specification[ <bool as Clone>::clone ](b: &bool) -> (res: bool)
     returns
         b,
 ;
 
+#[vcheck]
 pub assume_specification[ <char as Clone>::clone ](c: &char) -> (res: char)
     returns
         c,
@@ -41,6 +43,21 @@ pub assume_specification<'b, T: core::marker::PointeeSized, 'a>[ <&'b T as Clone
         res == b,
 ;
 
+/// Shared-ref clone returns the same referent
+#[cfg(not(any(verus_verify_core, verus_keep_ghost)))]
+#[verifier::external_body]
+#[allow(suspicious_double_ref_op)]
+#[vcheck]
+pub fn vcheck_ref_clone(v: u32) -> (ret: bool)
+    ensures
+        ret,
+{
+    let r = &v;
+    let cloned: &u32 = Clone::clone(&r);
+    core::ptr::eq(cloned, r) && *cloned == v
+}
+
+// (no vcheck: the quantified ensures uses an untyped binder (`forall|i|`))
 pub assume_specification<T: Clone, const N: usize>[ <[T; N] as Clone>::clone ](a: &[T; N]) -> (res:
     [T; N])
     ensures

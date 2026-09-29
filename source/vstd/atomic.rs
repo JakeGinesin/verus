@@ -543,6 +543,7 @@ macro_rules! ptr_atomic_methods {
         #[inline(always)]
         #[verifier::atomic]
         #[verifier::external_body]
+        #[vcheck] // vc#1009
         pub fn from_ptr_store(ptr: *mut $value_ty, value: $value_ty, Tracked(perm): Tracked<&mut PointsTo<$value_ty>>)
             requires
                 old(perm).ptr() == ptr,
@@ -560,6 +561,7 @@ macro_rules! ptr_atomic_methods {
         #[inline(always)]
         #[verifier::atomic]
         #[verifier::external_body]
+        #[vcheck] // vc#1008
         pub fn from_ptr_load(ptr: *mut $value_ty, perm: Tracked<&PointsTo<$value_ty>>) -> (ret: $value_ty)
             requires
                 perm.ptr() == ptr,
@@ -579,6 +581,7 @@ macro_rules! ptr_atomic_methods {
         #[inline(always)]
         #[verifier::external_body] /* vattr */
         #[verifier::atomic] /* vattr */
+        #[vcheck] // vc#1007
         pub fn from_ptr_swap(ptr: *mut $value_ty, Tracked(perm): Tracked<&mut PointsTo<$value_ty>>, v: $value_ty) -> (ret: $value_ty)
             requires
                 ptr == old(perm).ptr(),
@@ -1214,6 +1217,124 @@ impl<T> PAtomicPtr<T> {
     {
         self.ato.fetch_or(n, Ordering::SeqCst)
     }
+}
+
+} // verus!
+
+// vcheck oracles for the PAtomic value semantics
+#[cfg(not(any(verus_verify_core, verus_keep_ghost)))]
+macro_rules! vcheck_patomic_int_oracle {
+    ($at:ident, $t:ty, $name:ident) => {
+        verus! {
+        /// PAtomic integer ops match their permission-based value specs
+        #[verifier::external_body]
+        #[vcheck]
+        pub fn $name(v0: $t, a: $t, b: $t, sel: u8) -> (ret: bool)
+            ensures
+                ret,
+        {
+            let (at, _perm) = $at::new(v0);
+            let ld = |x: &$at| x.load(Tracked::assume_new());
+            let mut ok = ld(&at) == v0;
+            let old = ld(&at);
+            let cur = if sel % 2 == 0 { old } else { a };
+            ok = ok && match at.compare_exchange(Tracked::assume_new(), cur, b) {
+                Ok(x) => cur == old && x == old && ld(&at) == b,
+                Err(x) => cur != old && x == old && ld(&at) == old,
+            };
+            let old = ld(&at);
+            ok = ok && match at.compare_exchange_weak(Tracked::assume_new(), old, a) {
+                Ok(x) => x == old && ld(&at) == a,
+                Err(x) => x == old && ld(&at) == old,
+            };
+            let old = ld(&at);
+            ok = ok && at.swap(Tracked::assume_new(), b) == old && ld(&at) == b;
+            let old = ld(&at);
+            ok = ok && at.fetch_add_wrapping(Tracked::assume_new(), a) == old && ld(&at) == old.wrapping_add(a);
+            let old = ld(&at);
+            ok = ok && at.fetch_sub_wrapping(Tracked::assume_new(), b) == old && ld(&at) == old.wrapping_sub(b);
+            let old = ld(&at);
+            if let Some(s) = old.checked_add(a) {
+                ok = ok && at.fetch_add(Tracked::assume_new(), a) == old && ld(&at) == s;
+            }
+            let old = ld(&at);
+            if let Some(s) = old.checked_sub(b) {
+                ok = ok && at.fetch_sub(Tracked::assume_new(), b) == old && ld(&at) == s;
+            }
+            let old = ld(&at);
+            ok = ok && at.fetch_and(Tracked::assume_new(), a) == old && ld(&at) == (old & a);
+            let old = ld(&at);
+            ok = ok && at.fetch_or(Tracked::assume_new(), b) == old && ld(&at) == (old | b);
+            let old = ld(&at);
+            ok = ok && at.fetch_xor(Tracked::assume_new(), a) == old && ld(&at) == (old ^ a);
+            let old = ld(&at);
+            ok = ok && at.fetch_nand(Tracked::assume_new(), b) == old && ld(&at) == !(old & b);
+            let old = ld(&at);
+            ok = ok && at.fetch_max(Tracked::assume_new(), a) == old && ld(&at) == (if old > a { old } else { a });
+            let old = ld(&at);
+            ok = ok && at.fetch_min(Tracked::assume_new(), b) == old && ld(&at) == (if old < b { old } else { b });
+            at.store(Tracked::assume_new(), a);
+            ok && ld(&at) == a && at.into_inner(Tracked::assume_new()) == a
+        }
+        }
+    };
+}
+
+#[cfg(not(any(verus_verify_core, verus_keep_ghost)))]
+vcheck_patomic_int_oracle!(PAtomicU8, u8, vcheck_patomic_u8);
+#[cfg(not(any(verus_verify_core, verus_keep_ghost)))]
+vcheck_patomic_int_oracle!(PAtomicU16, u16, vcheck_patomic_u16);
+#[cfg(not(any(verus_verify_core, verus_keep_ghost)))]
+vcheck_patomic_int_oracle!(PAtomicU32, u32, vcheck_patomic_u32);
+#[cfg(not(any(verus_verify_core, verus_keep_ghost)))]
+vcheck_patomic_int_oracle!(PAtomicU64, u64, vcheck_patomic_u64);
+#[cfg(not(any(verus_verify_core, verus_keep_ghost)))]
+vcheck_patomic_int_oracle!(PAtomicUsize, usize, vcheck_patomic_usize);
+#[cfg(not(any(verus_verify_core, verus_keep_ghost)))]
+vcheck_patomic_int_oracle!(PAtomicI8, i8, vcheck_patomic_i8);
+#[cfg(not(any(verus_verify_core, verus_keep_ghost)))]
+vcheck_patomic_int_oracle!(PAtomicI16, i16, vcheck_patomic_i16);
+#[cfg(not(any(verus_verify_core, verus_keep_ghost)))]
+vcheck_patomic_int_oracle!(PAtomicI32, i32, vcheck_patomic_i32);
+#[cfg(not(any(verus_verify_core, verus_keep_ghost)))]
+vcheck_patomic_int_oracle!(PAtomicI64, i64, vcheck_patomic_i64);
+#[cfg(not(any(verus_verify_core, verus_keep_ghost)))]
+vcheck_patomic_int_oracle!(PAtomicIsize, isize, vcheck_patomic_isize);
+
+verus! {
+
+/// PAtomicBool ops match their permission-based value specs
+#[cfg(not(any(verus_verify_core, verus_keep_ghost)))]
+#[verifier::external_body]
+#[vcheck]
+pub fn vcheck_patomic_bool(v0: bool, a: bool, b: bool, sel: u8) -> (ret: bool)
+    ensures
+        ret,
+{
+    let (at, _perm) = PAtomicBool::new(v0);
+    let ld = |x: &PAtomicBool| x.load(Tracked::assume_new());
+    let mut ok = ld(&at) == v0;
+    let old = ld(&at);
+    let cur = if sel % 2 == 0 {
+        old
+    } else {
+        a
+    };
+    ok = ok && match at.compare_exchange(Tracked::assume_new(), cur, b) {
+        Ok(x) => cur == old && x == old && ld(&at) == b,
+        Err(x) => cur != old && x == old && ld(&at) == old,
+    };
+    let old = ld(&at);
+    ok = ok && at.swap(Tracked::assume_new(), a) == old && ld(&at) == a;
+    let old = ld(&at);
+    ok = ok && at.fetch_and(Tracked::assume_new(), b) == old && ld(&at) == (old && b);
+    let old = ld(&at);
+    ok = ok && at.fetch_or(Tracked::assume_new(), a) == old && ld(&at) == (old || a);
+    let old = ld(&at);
+    ok = ok && at.fetch_xor(Tracked::assume_new(), b) == old && ld(&at) == ((old && !b) || (!old && b));
+    let old = ld(&at);
+    ok = ok && at.fetch_nand(Tracked::assume_new(), a) == old && ld(&at) == !(old && a);
+    ok
 }
 
 } // verus!

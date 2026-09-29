@@ -394,4 +394,117 @@ pub broadcast group group_layout_axioms {
     group_align_properties,
 }
 
+// vcheck harnesses for the trusted layout axioms above
+
+/// `size_of_val` / `align_of_val` composed with the slice/str layout axioms
+#[cfg(not(any(verus_verify_core, verus_keep_ghost)))]
+#[verifier::external_body]
+#[vcheck]
+pub fn vcheck_size_align_of_val_slices(v: std::vec::Vec<u32>, s: &str) -> (ret: bool)
+    ensures
+        ret,
+{
+    let slice: &[u32] = v.as_slice();
+    core::mem::size_of_val(slice) == v.len() * core::mem::size_of::<u32>()
+        && core::mem::align_of_val(slice) == core::mem::align_of::<u32>()
+        && core::mem::size_of_val(s) == s.len()
+        && core::mem::align_of_val(s) == 1
+}
+
+/// Executable form of `layout_of_primitives` + `layout_of_unit_tuple`
+#[cfg(not(any(verus_verify_core, verus_keep_ghost)))]
+#[verifier::external_body]
+#[vcheck]
+pub fn vcheck_layout_of_primitives() -> (ret: bool)
+    ensures ret,
+{
+    core::mem::size_of::<bool>() == 1
+        && core::mem::size_of::<char>() == 4
+        && core::mem::size_of::<u8>() == 1
+        && core::mem::size_of::<i8>() == 1
+        && core::mem::size_of::<u16>() == 2
+        && core::mem::size_of::<i16>() == 2
+        && core::mem::size_of::<u32>() == 4
+        && core::mem::size_of::<i32>() == 4
+        && core::mem::size_of::<u64>() == 8
+        && core::mem::size_of::<i64>() == 8
+        && core::mem::size_of::<u128>() == 16
+        && core::mem::size_of::<i128>() == 16
+        && core::mem::size_of::<usize>() == core::mem::size_of::<isize>()
+        && core::mem::size_of::<usize>() * 8 == usize::BITS as usize
+        && core::mem::size_of::<()>() == 0
+        && core::mem::align_of::<()>() == 1
+}
+
+/// Executable form of `layout_of_references_and_pointers{,_for_sized_types}` at `T = u32`
+#[cfg(not(any(verus_verify_core, verus_keep_ghost)))]
+#[verifier::external_body]
+#[vcheck]
+pub fn vcheck_layout_of_references_and_pointers() -> (ret: bool)
+    ensures ret,
+{
+    core::mem::size_of::<*mut u32>() == core::mem::size_of::<*const u32>()
+        && core::mem::size_of::<*mut u32>() == core::mem::size_of::<&u32>()
+        && core::mem::align_of::<*mut u32>() == core::mem::align_of::<*const u32>()
+        && core::mem::align_of::<*mut u32>() == core::mem::align_of::<&u32>()
+        && core::mem::size_of::<*mut u32>() == core::mem::size_of::<usize>()
+        && core::mem::align_of::<*mut u32>() == core::mem::align_of::<usize>()
+        && core::mem::size_of::<*mut [u32]>() >= core::mem::size_of::<usize>()
+        && core::mem::align_of::<*mut [u32]>() >= core::mem::align_of::<usize>()
+}
+
+/// Executable form of `layout_of_maybe_uninit` at representative types
+#[cfg(not(any(verus_verify_core, verus_keep_ghost)))]
+#[verifier::external_body]
+#[vcheck]
+pub fn vcheck_layout_of_maybe_uninit() -> (ret: bool)
+    ensures ret,
+{
+    fn holds<T>() -> bool {
+        core::mem::size_of::<core::mem::MaybeUninit<T>>() == core::mem::size_of::<T>()
+            && core::mem::align_of::<core::mem::MaybeUninit<T>>()
+                == core::mem::align_of::<T>()
+    }
+    holds::<u8>() && holds::<u64>() && holds::<u128>() && holds::<char>()
+        && holds::<(u8, u64)>() && holds::<[u32; 5]>() && holds::<&u32>()
+}
+
+/// Executable form of `align_properties` (+ `align_nonzero`) at a few representative types
+#[cfg(not(any(verus_verify_core, verus_keep_ghost)))]
+#[verifier::external_body]
+#[vcheck]
+pub fn vcheck_align_properties() -> (ret: bool)
+    ensures ret,
+{
+    fn holds<T>() -> bool {
+        let s = core::mem::size_of::<T>();
+        let a = core::mem::align_of::<T>();
+        a > 0 && s % a == 0 && a.is_power_of_two()
+    }
+    holds::<u8>() && holds::<u32>() && holds::<u128>() && holds::<usize>()
+        && holds::<bool>() && holds::<char>() && holds::<(u8, u64)>()
+        && holds::<[u32; 3]>() && holds::<&u32>()
+}
+
+/// Executable form of `layout_of_slices` at `T = u32`
+#[cfg(not(any(verus_verify_core, verus_keep_ghost)))]
+#[verifier::external_body]
+#[vcheck]
+pub fn vcheck_layout_of_slices(x: &[u32]) -> (ret: bool)
+    ensures ret,
+{
+    core::mem::size_of_val(x) == x.len() * core::mem::size_of::<u32>()
+        && core::mem::align_of_val(x) == core::mem::align_of::<u32>()
+}
+
+/// Executable form of `layout_of_str`'s alignment claim
+#[cfg(not(any(verus_verify_core, verus_keep_ghost)))]
+#[verifier::external_body]
+#[vcheck]
+pub fn vcheck_layout_of_str(x: &str) -> (ret: bool)
+    ensures ret,
+{
+    core::mem::align_of_val(x) == core::mem::align_of::<u8>()
+}
+
 } // verus!

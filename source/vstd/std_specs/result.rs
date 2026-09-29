@@ -131,6 +131,7 @@ pub open spec fn is_ok<T, E>(result: &Result<T, E>) -> bool {
     is_variant(result, "Ok")
 }
 
+#[vcheck(T = u32, E = u32)]
 #[verifier::when_used_as_spec(is_ok)]
 pub assume_specification<T, E>[ Result::<T, E>::is_ok ](r: &Result<T, E>) -> (b: bool)
     ensures
@@ -144,6 +145,7 @@ pub open spec fn is_err<T, E>(result: &Result<T, E>) -> bool {
     is_variant(result, "Err")
 }
 
+#[vcheck(T = u32, E = u32)]
 #[verifier::when_used_as_spec(is_err)]
 pub assume_specification<T, E>[ Result::<T, E>::is_err ](r: &Result<T, E>) -> (b: bool)
     ensures
@@ -152,6 +154,7 @@ pub assume_specification<T, E>[ Result::<T, E>::is_err ](r: &Result<T, E>) -> (b
 ;
 
 // as_ref
+#[vcheck(T = u32, E = u32)]
 pub assume_specification<T, E>[ Result::<T, E>::as_ref ](result: &Result<T, E>) -> (r: Result<
     &T,
     &E,
@@ -173,6 +176,7 @@ pub open spec fn spec_unwrap<T, E: core::fmt::Debug>(result: Result<T, E>) -> T
     result->Ok_0
 }
 
+#[vcheck(T = u32, E = u32)]
 #[verifier::when_used_as_spec(spec_unwrap)]
 pub assume_specification<T, E: core::fmt::Debug>[ Result::<T, E>::unwrap ](
     result: Result<T, E>,
@@ -192,6 +196,7 @@ pub open spec fn spec_unwrap_err<T: core::fmt::Debug, E>(result: Result<T, E>) -
     result->Err_0
 }
 
+#[vcheck(T = u32, E = u32)]
 #[verifier::when_used_as_spec(spec_unwrap_err)]
 pub assume_specification<T: core::fmt::Debug, E>[ Result::<T, E>::unwrap_err ](
     result: Result<T, E>,
@@ -211,6 +216,7 @@ pub open spec fn spec_expect<T, E: core::fmt::Debug>(result: Result<T, E>, msg: 
     result->Ok_0
 }
 
+#[vcheck(T = u32, E = u32)]
 #[verifier::when_used_as_spec(spec_expect)]
 pub assume_specification<T, E: core::fmt::Debug>[ Result::<T, E>::expect ](
     result: Result<T, E>,
@@ -258,6 +264,7 @@ pub open spec fn ok<T, E>(result: Result<T, E>) -> Option<T> {
     }
 }
 
+#[vcheck(T = u32, E = u32)]
 #[verifier::when_used_as_spec(ok)]
 pub assume_specification<T, E>[ Result::<T, E>::ok ](result: Result<T, E>) -> (opt: Option<T>)
     ensures
@@ -274,11 +281,38 @@ pub open spec fn err<T, E>(result: Result<T, E>) -> Option<E> {
     }
 }
 
+#[vcheck(T = u32, E = u32)]
 #[verifier::when_used_as_spec(err)]
 pub assume_specification<T, E>[ Result::<T, E>::err ](result: Result<T, E>) -> (opt: Option<E>)
     ensures
         opt == err(result),
     no_unwind
 ;
+
+} // verus!
+
+verus! {
+
+/// `map` / `map_err` transform one side and preserve the other
+#[cfg(not(any(verus_verify_core, verus_keep_ghost)))]
+#[verifier::external_body]
+#[vcheck]
+pub fn vcheck_result_map_map_err(r: Result<u32, u32>, k: u32) -> (ret: bool)
+    ensures
+        ret,
+{
+    let f = |x: u32| x.wrapping_mul(3).wrapping_add(k);
+    let m = r.map(f);
+    let me = r.map_err(f);
+    let map_ok = match r {
+        Ok(x) => m == Ok(f(x)),
+        Err(e) => m == Err(e),
+    };
+    let err_ok = match r {
+        Ok(x) => me == Ok(x),
+        Err(e) => me == Err(f(e)),
+    };
+    map_ok && err_ok
+}
 
 } // verus!

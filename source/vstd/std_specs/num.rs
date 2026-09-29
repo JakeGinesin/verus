@@ -1,4 +1,6 @@
 #![allow(unused_imports)]
+// spec fns are erased under a plain `cargo build` / `cargo test`
+#[cfg(verus_keep_ghost)]
 use super::super::arithmetic::div_mod::{rust_div, rust_rem};
 use super::super::prelude::*;
 use super::super::wrapping::*;
@@ -32,9 +34,11 @@ macro_rules! num_specs {
         mod $mod_u_tmp {
             use super::*;
 
+            #[vcheck]
             pub assume_specification[<$uN as Clone>::clone](x: &$uN) -> (res: $uN)
                 ensures res == x;
 
+            #[cfg(verus_keep_ghost)]
             impl super::super::cmp::PartialEqSpecImpl for $uN {
                 open spec fn obeys_eq_spec() -> bool {
                     true
@@ -45,6 +49,7 @@ macro_rules! num_specs {
                 }
             }
 
+            #[cfg(verus_keep_ghost)]
             impl super::super::cmp::PartialOrdSpecImpl for $uN {
                 open spec fn obeys_partial_cmp_spec() -> bool {
                     true
@@ -61,6 +66,7 @@ macro_rules! num_specs {
                 }
             }
 
+            #[cfg(verus_keep_ghost)]
             impl super::super::cmp::OrdSpecImpl for $uN {
                 open spec fn obeys_cmp_spec() -> bool {
                     true
@@ -93,8 +99,98 @@ macro_rules! num_specs {
 
             pub assume_specification[<$uN as PartialOrd<$uN>>::ge](x: &$uN, y: &$uN) -> bool;
 
+            // vcheck wrapper harnesses for the comparison-operator specs above
+            #[cfg(not(any(verus_verify_core, verus_keep_ghost)))]
+            #[verifier::external_body]
+            #[vcheck]
+            pub fn vcheck_cmp_eq(x: $uN, y: $uN) -> (ret: bool)
+                ensures ret == (x == y),
+            {
+                <$uN as PartialEq<$uN>>::eq(&x, &y)
+            }
+
+            #[cfg(not(any(verus_verify_core, verus_keep_ghost)))]
+            #[verifier::external_body]
+            #[vcheck]
+            pub fn vcheck_cmp_ne(x: $uN, y: $uN) -> (ret: bool)
+                ensures ret == (x != y),
+            {
+                <$uN as PartialEq<$uN>>::ne(&x, &y)
+            }
+
+            #[cfg(not(any(verus_verify_core, verus_keep_ghost)))]
+            #[verifier::external_body]
+            #[vcheck]
+            pub fn vcheck_cmp_lt(x: $uN, y: $uN) -> (ret: bool)
+                ensures ret == (x < y),
+            {
+                <$uN as PartialOrd<$uN>>::lt(&x, &y)
+            }
+
+            #[cfg(not(any(verus_verify_core, verus_keep_ghost)))]
+            #[verifier::external_body]
+            #[vcheck]
+            pub fn vcheck_cmp_le(x: $uN, y: $uN) -> (ret: bool)
+                ensures ret == (x <= y),
+            {
+                <$uN as PartialOrd<$uN>>::le(&x, &y)
+            }
+
+            #[cfg(not(any(verus_verify_core, verus_keep_ghost)))]
+            #[verifier::external_body]
+            #[vcheck]
+            pub fn vcheck_cmp_gt(x: $uN, y: $uN) -> (ret: bool)
+                ensures ret == (x > y),
+            {
+                <$uN as PartialOrd<$uN>>::gt(&x, &y)
+            }
+
+            #[cfg(not(any(verus_verify_core, verus_keep_ghost)))]
+            #[verifier::external_body]
+            #[vcheck]
+            pub fn vcheck_cmp_ge(x: $uN, y: $uN) -> (ret: bool)
+                ensures ret == (x >= y),
+            {
+                <$uN as PartialOrd<$uN>>::ge(&x, &y)
+            }
+
+            // Mirrors `PartialOrdSpecImpl::partial_cmp_spec` for $uN
+            #[cfg(not(any(verus_verify_core, verus_keep_ghost)))]
+            #[verifier::external_body]
+            #[vcheck]
+            pub fn vcheck_cmp_partial_cmp(x: $uN, y: $uN) -> (ret: Option<Ordering>)
+                ensures
+                    ret == (if x < y {
+                        Some(Ordering::Less)
+                    } else if x > y {
+                        Some(Ordering::Greater)
+                    } else {
+                        Some(Ordering::Equal)
+                    }),
+            {
+                <$uN as PartialOrd<$uN>>::partial_cmp(&x, &y)
+            }
+
+            // Mirrors `OrdSpecImpl::cmp_spec` for $uN
+            #[cfg(not(any(verus_verify_core, verus_keep_ghost)))]
+            #[verifier::external_body]
+            #[vcheck]
+            pub fn vcheck_cmp_cmp(x: $uN, y: $uN) -> (ret: Ordering)
+                ensures
+                    ret == (if x < y {
+                        Ordering::Less
+                    } else if x > y {
+                        Ordering::Greater
+                    } else {
+                        Ordering::Equal
+                    }),
+            {
+                <$uN as Ord>::cmp(&x, &y)
+            }
+
             #[verifier::allow_in_spec]
             #[cfg(not(verus_verify_core))]
+            #[vcheck]
             pub assume_specification[<$uN>::wrapping_add](x: $uN, y: $uN) -> $uN
                 returns $mod_u::wrapping_add(x, y)
                 opens_invariants none
@@ -102,6 +198,7 @@ macro_rules! num_specs {
 
             #[verifier::allow_in_spec]
             #[cfg(not(verus_verify_core))]
+            #[vcheck]
             pub assume_specification[<$uN>::wrapping_add_signed](x: $uN, y: $iN) -> $uN
                 returns $mod_u::wrapping_add_signed(x, y)
                 opens_invariants none
@@ -109,6 +206,7 @@ macro_rules! num_specs {
 
             #[verifier::allow_in_spec]
             #[cfg(not(verus_verify_core))]
+            #[vcheck]
             pub assume_specification[<$uN>::wrapping_sub](x: $uN, y: $uN) -> $uN
                 returns $mod_u::wrapping_sub(x, y)
                 opens_invariants none
@@ -116,6 +214,7 @@ macro_rules! num_specs {
 
             #[verifier::allow_in_spec]
             #[cfg(not(verus_verify_core))]
+            #[vcheck]
             pub assume_specification[<$uN>::wrapping_mul](x: $uN, y: $uN) -> $uN
                 returns $mod_u::wrapping_mul(x, y)
                 opens_invariants none
@@ -123,6 +222,7 @@ macro_rules! num_specs {
 
             #[verifier::allow_in_spec]
             #[cfg(not(verus_verify_core))]
+            #[vcheck]
             pub assume_specification[<$uN>::wrapping_shl](x: $uN, rhs: u32) -> $uN
                 returns $mod_u::wrapping_shl(x, rhs)
                 opens_invariants none
@@ -130,6 +230,7 @@ macro_rules! num_specs {
 
             #[verifier::allow_in_spec]
             #[cfg(not(verus_verify_core))]
+            #[vcheck]
             pub assume_specification[<$uN>::wrapping_shr](x: $uN, rhs: u32) -> $uN
                 returns $mod_u::wrapping_shr(x, rhs)
                 opens_invariants none
@@ -137,6 +238,7 @@ macro_rules! num_specs {
 
             #[verifier::allow_in_spec]
             #[cfg(not(verus_verify_core))]
+            #[vcheck]
             pub assume_specification[<$uN>::checked_add](x: $uN, y: $uN) -> Option<$uN>
                 returns (
                     if x + y > <$uN>::MAX {
@@ -149,6 +251,7 @@ macro_rules! num_specs {
 
             #[verifier::allow_in_spec]
             #[cfg(not(verus_verify_core))]
+            #[vcheck]
             pub assume_specification[<$uN>::checked_add_signed](x: $uN, y: $iN) -> Option<$uN>
                 returns (
                     if x + y > <$uN>::MAX || x + y < 0 {
@@ -161,6 +264,7 @@ macro_rules! num_specs {
 
             #[verifier::allow_in_spec]
             #[cfg(not(verus_verify_core))]
+            #[vcheck]
             pub assume_specification[<$uN>::checked_sub](x: $uN, y: $uN) -> Option<$uN>
                 returns (
                     if x - y < 0 {
@@ -173,6 +277,7 @@ macro_rules! num_specs {
 
             #[verifier::allow_in_spec]
             #[cfg(not(verus_verify_core))]
+            #[vcheck]
             pub assume_specification[<$uN>::checked_mul](x: $uN, y: $uN) -> Option<$uN>
                 returns (
                     if x * y > <$uN>::MAX {
@@ -183,8 +288,23 @@ macro_rules! num_specs {
                 )
                 no_unwind;
 
+
+            // Exec twin for `next_multiple_of`
+            #[cfg(not(any(verus_verify_core, verus_keep_ghost)))]
+            external_vcheck_provide! {
+                fn next_multiple_of(x: int, y: int) -> int {
+                    use ::verus_spec_check::__vcheck_int as bi;
+                    if bi::eq(bi::rem(x.clone(), y.clone()), 0u8) {
+                        x
+                    } else {
+                        bi::add(x.clone(), bi::sub(y.clone(), bi::rem(x, y)))
+                    }
+                }
+            }
+
             #[verifier::allow_in_spec]
             #[cfg(not(verus_verify_core))]
+            #[vcheck]
             pub assume_specification[<$uN>::checked_next_multiple_of](x: $uN, rhs: $uN) -> Option<$uN>
                 returns (
                     if rhs == 0 {
@@ -207,6 +327,7 @@ macro_rules! num_specs {
 
             #[verifier::when_used_as_spec(checked_div)]
             #[cfg(not(verus_verify_core))]
+            #[vcheck]
             pub assume_specification[<$uN>::checked_div](lhs: $uN, rhs: $uN) -> (result: Option<$uN>)
                 ensures
                     result == checked_div(lhs, rhs),
@@ -214,6 +335,7 @@ macro_rules! num_specs {
 
             #[verifier::when_used_as_spec(checked_div)]
             #[cfg(not(verus_verify_core))]
+            #[vcheck]
             pub assume_specification[<$uN>::checked_div_euclid](lhs: $uN, rhs: $uN) -> (result: Option<$uN>)
                 ensures
                     // checked_div is the same as checked_div_euclid for unsigned ints
@@ -222,6 +344,7 @@ macro_rules! num_specs {
 
             #[verifier::allow_in_spec]
             #[cfg(not(verus_verify_core))]
+            #[vcheck]
             pub assume_specification[<$uN>::checked_rem](lhs: $uN, rhs: $uN) -> Option<$uN>
                 returns (
                     if rhs == 0 {
@@ -235,6 +358,7 @@ macro_rules! num_specs {
 
             #[verifier::allow_in_spec]
             #[cfg(not(verus_verify_core))]
+            #[vcheck]
             pub assume_specification[<$uN>::checked_rem_euclid](lhs: $uN, rhs: $uN) -> Option<$uN>
                 returns (
                     if rhs == 0 {
@@ -248,6 +372,7 @@ macro_rules! num_specs {
 
             #[verifier::allow_in_spec]
             #[cfg(not(verus_verify_core))]
+            #[vcheck]
             pub assume_specification[<$uN>::saturating_add](x: $uN, y: $uN) -> $uN
                 returns (
                     if x + y > <$uN>::MAX {
@@ -260,6 +385,7 @@ macro_rules! num_specs {
 
             #[verifier::allow_in_spec]
             #[cfg(not(verus_verify_core))]
+            #[vcheck]
             pub assume_specification[<$uN>::saturating_sub](x: $uN, y: $uN) -> $uN
                 returns (
                     if x - y < <$uN>::MIN {
@@ -272,6 +398,7 @@ macro_rules! num_specs {
 
             #[verifier::allow_in_spec]
             #[cfg(not(verus_verify_core))]
+            #[vcheck]
             pub assume_specification[<$uN>::saturating_mul](x: $uN, y: $uN) -> $uN
                 returns (
                     if x * y > <$uN>::MAX {
@@ -284,6 +411,7 @@ macro_rules! num_specs {
 
             #[verifier::allow_in_spec]
             #[cfg(not(verus_verify_core))]
+            #[vcheck]
             pub assume_specification[<$uN>::is_multiple_of](x: $uN, y: $uN) -> bool
                 returns (
                     if y == 0 { x == 0 } else { x % y == 0 }
@@ -296,9 +424,13 @@ macro_rules! num_specs {
         mod $mod_i_tmp {
             use super::*;
 
+
+
+            #[vcheck]
             pub assume_specification[<$iN as Clone>::clone](x: &$iN) -> (res: $iN)
                 ensures res == x;
 
+            #[cfg(verus_keep_ghost)]
             impl super::super::cmp::PartialEqSpecImpl for $iN {
                 open spec fn obeys_eq_spec() -> bool {
                     true
@@ -309,6 +441,7 @@ macro_rules! num_specs {
                 }
             }
 
+            #[cfg(verus_keep_ghost)]
             impl super::super::cmp::PartialOrdSpecImpl for $iN {
                 open spec fn obeys_partial_cmp_spec() -> bool {
                     true
@@ -325,6 +458,7 @@ macro_rules! num_specs {
                 }
             }
 
+            #[cfg(verus_keep_ghost)]
             impl super::super::cmp::OrdSpecImpl for $iN {
                 open spec fn obeys_cmp_spec() -> bool {
                     true
@@ -357,8 +491,98 @@ macro_rules! num_specs {
 
             pub assume_specification[<$iN as PartialOrd<$iN>>::ge](x: &$iN, y: &$iN) -> bool;
 
+            // vcheck wrapper harnesses for the signed comparison-operator specs above
+            #[cfg(not(any(verus_verify_core, verus_keep_ghost)))]
+            #[verifier::external_body]
+            #[vcheck]
+            pub fn vcheck_cmp_eq(x: $iN, y: $iN) -> (ret: bool)
+                ensures ret == (x == y),
+            {
+                <$iN as PartialEq<$iN>>::eq(&x, &y)
+            }
+
+            #[cfg(not(any(verus_verify_core, verus_keep_ghost)))]
+            #[verifier::external_body]
+            #[vcheck]
+            pub fn vcheck_cmp_ne(x: $iN, y: $iN) -> (ret: bool)
+                ensures ret == (x != y),
+            {
+                <$iN as PartialEq<$iN>>::ne(&x, &y)
+            }
+
+            #[cfg(not(any(verus_verify_core, verus_keep_ghost)))]
+            #[verifier::external_body]
+            #[vcheck]
+            pub fn vcheck_cmp_lt(x: $iN, y: $iN) -> (ret: bool)
+                ensures ret == (x < y),
+            {
+                <$iN as PartialOrd<$iN>>::lt(&x, &y)
+            }
+
+            #[cfg(not(any(verus_verify_core, verus_keep_ghost)))]
+            #[verifier::external_body]
+            #[vcheck]
+            pub fn vcheck_cmp_le(x: $iN, y: $iN) -> (ret: bool)
+                ensures ret == (x <= y),
+            {
+                <$iN as PartialOrd<$iN>>::le(&x, &y)
+            }
+
+            #[cfg(not(any(verus_verify_core, verus_keep_ghost)))]
+            #[verifier::external_body]
+            #[vcheck]
+            pub fn vcheck_cmp_gt(x: $iN, y: $iN) -> (ret: bool)
+                ensures ret == (x > y),
+            {
+                <$iN as PartialOrd<$iN>>::gt(&x, &y)
+            }
+
+            #[cfg(not(any(verus_verify_core, verus_keep_ghost)))]
+            #[verifier::external_body]
+            #[vcheck]
+            pub fn vcheck_cmp_ge(x: $iN, y: $iN) -> (ret: bool)
+                ensures ret == (x >= y),
+            {
+                <$iN as PartialOrd<$iN>>::ge(&x, &y)
+            }
+
+            // Mirrors `PartialOrdSpecImpl::partial_cmp_spec` for $iN
+            #[cfg(not(any(verus_verify_core, verus_keep_ghost)))]
+            #[verifier::external_body]
+            #[vcheck]
+            pub fn vcheck_cmp_partial_cmp(x: $iN, y: $iN) -> (ret: Option<Ordering>)
+                ensures
+                    ret == (if x < y {
+                        Some(Ordering::Less)
+                    } else if x > y {
+                        Some(Ordering::Greater)
+                    } else {
+                        Some(Ordering::Equal)
+                    }),
+            {
+                <$iN as PartialOrd<$iN>>::partial_cmp(&x, &y)
+            }
+
+            // Mirrors `OrdSpecImpl::cmp_spec` for $iN
+            #[cfg(not(any(verus_verify_core, verus_keep_ghost)))]
+            #[verifier::external_body]
+            #[vcheck]
+            pub fn vcheck_cmp_cmp(x: $iN, y: $iN) -> (ret: Ordering)
+                ensures
+                    ret == (if x < y {
+                        Ordering::Less
+                    } else if x > y {
+                        Ordering::Greater
+                    } else {
+                        Ordering::Equal
+                    }),
+            {
+                <$iN as Ord>::cmp(&x, &y)
+            }
+
             #[verifier::allow_in_spec]
             #[cfg(not(verus_verify_core))]
+            #[vcheck]
             pub assume_specification[<$iN>::wrapping_add](x: $iN, y: $iN) -> $iN
                 returns $mod_i::wrapping_add(x, y)
                 opens_invariants none
@@ -366,6 +590,7 @@ macro_rules! num_specs {
 
             #[verifier::allow_in_spec]
             #[cfg(not(verus_verify_core))]
+            #[vcheck]
             pub assume_specification[<$iN>::wrapping_add_unsigned](x: $iN, y: $uN) -> $iN
                 returns $mod_i::wrapping_add_unsigned(x, y)
                 opens_invariants none
@@ -373,13 +598,15 @@ macro_rules! num_specs {
 
             #[verifier::allow_in_spec]
             #[cfg(not(verus_verify_core))]
-            pub assume_specification[<$iN>::wrapping_sub](x: $iN, y: $iN) -> (res: $iN)
+            #[vcheck]
+            pub assume_specification[<$iN>::wrapping_sub](x: $iN, y: $iN) -> $iN
                 returns $mod_i::wrapping_sub(x, y)
                 opens_invariants none
                 no_unwind;
 
             #[verifier::allow_in_spec]
             #[cfg(not(verus_verify_core))]
+            #[vcheck]
             pub assume_specification[<$iN>::wrapping_mul](x: $iN, y: $iN) -> $iN
                 returns $mod_i::wrapping_mul(x, y)
                 opens_invariants none
@@ -387,6 +614,7 @@ macro_rules! num_specs {
 
             #[verifier::allow_in_spec]
             #[cfg(not(verus_verify_core))]
+            #[vcheck]
             pub assume_specification[<$iN>::wrapping_shl](x: $iN, rhs: u32) -> $iN
                 returns $mod_i::wrapping_shl(x, rhs)
                 opens_invariants none
@@ -394,6 +622,7 @@ macro_rules! num_specs {
 
             #[verifier::allow_in_spec]
             #[cfg(not(verus_verify_core))]
+            #[vcheck]
             pub assume_specification[<$iN>::wrapping_shr](x: $iN, rhs: u32) -> $iN
                 returns $mod_i::wrapping_shr(x, rhs)
                 opens_invariants none
@@ -401,6 +630,7 @@ macro_rules! num_specs {
 
             #[verifier::allow_in_spec]
             #[cfg(not(verus_verify_core))]
+            #[vcheck]
             pub assume_specification[<$iN>::checked_add](x: $iN, y: $iN) -> Option<$iN>
                 returns (
                     if x + y > <$iN>::MAX || x + y < <$iN>::MIN {
@@ -413,6 +643,7 @@ macro_rules! num_specs {
 
             #[verifier::allow_in_spec]
             #[cfg(not(verus_verify_core))]
+            #[vcheck]
             pub assume_specification[<$iN>::checked_add_unsigned](x: $iN, y: $uN) -> Option<$iN>
                 returns (
                     if x + y > <$iN>::MAX {
@@ -425,6 +656,7 @@ macro_rules! num_specs {
 
             #[verifier::allow_in_spec]
             #[cfg(not(verus_verify_core))]
+            #[vcheck]
             pub assume_specification[<$iN>::checked_sub](x: $iN, y: $iN) -> Option<$iN>
                 returns (
                     if x - y > <$iN>::MAX || x - y < <$iN>::MIN {
@@ -437,6 +669,7 @@ macro_rules! num_specs {
 
             #[verifier::allow_in_spec]
             #[cfg(not(verus_verify_core))]
+            #[vcheck]
             pub assume_specification[<$iN>::checked_sub_unsigned](x: $iN, y: $uN) -> Option<$iN>
                 returns (
                     if x - y < <$iN>::MIN {
@@ -449,6 +682,7 @@ macro_rules! num_specs {
 
             #[verifier::allow_in_spec]
             #[cfg(not(verus_verify_core))]
+            #[vcheck]
             pub assume_specification[<$iN>::checked_mul](x: $iN, y: $iN) -> Option<$iN>
                 returns (
                     if x * y > <$iN>::MAX || x * y < <$iN>::MIN {
@@ -459,8 +693,38 @@ macro_rules! num_specs {
                 )
                 no_unwind;
 
+            // Exec twins for the cross-module spec fns `rust_div` / `rust_rem` (arithmetic/div_mod.rs)
+            #[cfg(not(any(verus_verify_core, verus_keep_ghost)))]
+            external_vcheck_provide! {
+                fn rust_div(a: int, b: int) -> int {
+                    use ::verus_spec_check::__vcheck_int as bi;
+                    if bi::eq(a.clone(), 0u8) {
+                        bi::lift(0u8)
+                    } else if bi::gt(a.clone(), 0u8) {
+                        bi::div(a, b)
+                    } else {
+                        bi::neg(bi::div(bi::neg(a), b))
+                    }
+                }
+            }
+
+            #[cfg(not(any(verus_verify_core, verus_keep_ghost)))]
+            external_vcheck_provide! {
+                fn rust_rem(a: int, b: int) -> int {
+                    use ::verus_spec_check::__vcheck_int as bi;
+                    if bi::eq(a.clone(), 0u8) {
+                        bi::lift(0u8)
+                    } else if bi::gt(a.clone(), 0u8) {
+                        bi::rem(a, b)
+                    } else {
+                        bi::neg(bi::rem(bi::neg(a), b))
+                    }
+                }
+            }
+
             #[verifier::allow_in_spec]
             #[cfg(not(verus_verify_core))]
+            #[vcheck]
             pub assume_specification[<$iN>::checked_div](lhs: $iN, rhs: $iN) -> Option<$iN>
                 returns (
                     if rhs == 0 || (lhs == <$iN>::MIN && rhs == -1) {
@@ -473,6 +737,7 @@ macro_rules! num_specs {
 
             #[verifier::allow_in_spec]
             #[cfg(not(verus_verify_core))]
+            #[vcheck]
             pub assume_specification[<$iN>::checked_div_euclid](lhs: $iN, rhs: $iN) -> Option<$iN>
                 returns (
                     if rhs == 0 || (lhs == <$iN>::MIN && rhs == -1) {
@@ -485,6 +750,7 @@ macro_rules! num_specs {
 
             #[verifier::allow_in_spec]
             #[cfg(not(verus_verify_core))]
+            #[vcheck]
             pub assume_specification[<$iN>::checked_rem](lhs: $iN, rhs: $iN) -> Option<$iN>
                 returns (
                     if rhs == 0 || (lhs == <$iN>::MIN && rhs == -1) {
@@ -497,6 +763,7 @@ macro_rules! num_specs {
 
             #[verifier::allow_in_spec]
             #[cfg(not(verus_verify_core))]
+            #[vcheck]
             pub assume_specification[<$iN>::checked_rem_euclid](lhs: $iN, rhs: $iN) -> Option<$iN>
                 returns (
                     if rhs == 0 || (lhs == <$iN>::MIN && rhs == -1) {
@@ -534,3 +801,62 @@ num_specs!(
     isize_specs,
     (usize::MAX - usize::MIN + 1)
 );
+
+// vcheck oracles for signed division edges that uniform sampling misses
+#[cfg(not(any(verus_verify_core, verus_keep_ghost)))]
+macro_rules! vcheck_signed_edge_oracle {
+    ($t:ty, $name:ident) => {
+        verus! {
+        /// signed checked div/rem/mul/add/sub over MIN, -1 and other edges match the spec formulas
+        #[verifier::external_body]
+        #[vcheck]
+        pub fn $name(x: $t, y: $t) -> (ret: bool)
+            ensures
+                ret,
+        {
+            let edges: [$t; 9] = [<$t>::MIN, <$t>::MIN + 1, -2, -1, 0, 1, 2, <$t>::MAX - 1, <$t>::MAX];
+            let euclid = |a: i128, b: i128| {
+                let (mut q, mut r) = (a / b, a % b);
+                if r < 0 {
+                    if b > 0 {
+                        q -= 1;
+                        r += b;
+                    } else {
+                        q += 1;
+                        r -= b;
+                    }
+                }
+                (q, r)
+            };
+            let fit = |v: i128| if v < <$t>::MIN as i128 || v > <$t>::MAX as i128 { None } else { Some(v as $t) };
+            let mut ok = true;
+            for a in edges.iter().copied().chain([x]) {
+                for b in edges.iter().copied().chain([y]) {
+                    let guard = b == 0 || (a == <$t>::MIN && b == -1);
+                    let (ai, bi) = (a as i128, b as i128);
+                    let div = if guard { None } else { Some((ai / bi) as $t) };
+                    let rem = if guard { None } else { Some((ai % bi) as $t) };
+                    let dive = if guard { None } else { Some(euclid(ai, bi).0 as $t) };
+                    let reme = if guard { None } else { Some(euclid(ai, bi).1 as $t) };
+                    ok = ok && a.checked_div(b) == div && a.checked_rem(b) == rem
+                        && a.checked_div_euclid(b) == dive && a.checked_rem_euclid(b) == reme
+                        && a.checked_mul(b) == fit(ai * bi) && a.checked_add(b) == fit(ai + bi)
+                        && a.checked_sub(b) == fit(ai - bi);
+                }
+            }
+            ok
+        }
+        }
+    };
+}
+
+#[cfg(not(any(verus_verify_core, verus_keep_ghost)))]
+vcheck_signed_edge_oracle!(i8, vcheck_signed_edges_i8);
+#[cfg(not(any(verus_verify_core, verus_keep_ghost)))]
+vcheck_signed_edge_oracle!(i16, vcheck_signed_edges_i16);
+#[cfg(not(any(verus_verify_core, verus_keep_ghost)))]
+vcheck_signed_edge_oracle!(i32, vcheck_signed_edges_i32);
+#[cfg(not(any(verus_verify_core, verus_keep_ghost)))]
+vcheck_signed_edge_oracle!(i64, vcheck_signed_edges_i64);
+#[cfg(not(any(verus_verify_core, verus_keep_ghost)))]
+vcheck_signed_edge_oracle!(isize, vcheck_signed_edges_isize);

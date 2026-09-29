@@ -389,4 +389,67 @@ impl<T: Copy> InvCell<T> {
     }
 }
 
+// vcheck composites for the (deprecated) `PCell` tracked-permission API
+
+/// `empty` + `put` + `take`: put initializes, take moves the value out
+#[cfg(not(any(verus_verify_core, verus_keep_ghost)))]
+#[allow(deprecated)]
+#[verifier::external_body]
+#[vcheck]
+pub fn vcheck_cell_put_take(v: u32) -> (ret: bool)
+    ensures
+        ret,
+{
+    let (p, Tracked(mut perm)) = PCell::<u32>::empty();
+    p.put(Tracked(&mut perm), v);
+    p.take(Tracked(&mut perm)) == v
+}
+
+/// `new` + `replace` + `borrow`: replace returns the old value and stores the new one
+#[cfg(not(any(verus_verify_core, verus_keep_ghost)))]
+#[allow(deprecated)]
+#[verifier::external_body]
+#[vcheck]
+pub fn vcheck_cell_replace_borrow(v: u32, v2: u32) -> (ret: bool)
+    ensures
+        ret,
+{
+    let (p, Tracked(mut perm)) = PCell::<u32>::new(v);
+    let old_v = p.replace(Tracked(&mut perm), v2);
+    old_v == v && *p.borrow(Tracked(&perm)) == v2
+}
+
+/// `borrow_mut`: reads the current value and writes through
+#[cfg(not(any(verus_verify_core, verus_keep_ghost)))]
+#[allow(deprecated)]
+#[verifier::external_body]
+#[vcheck]
+pub fn vcheck_cell_borrow_mut(v: u32, v2: u32) -> (ret: bool)
+    ensures
+        ret,
+{
+    let (p, Tracked(mut perm)) = PCell::<u32>::new(v);
+    let read_ok = {
+        let r = p.borrow_mut(Tracked(&mut perm));
+        let ok = *r == v;
+        *r = v2;
+        ok
+    };
+    read_ok && *p.borrow(Tracked(&perm)) == v2
+}
+
+/// `write` (Copy tier): overwrites the initialized value
+#[cfg(not(any(verus_verify_core, verus_keep_ghost)))]
+#[allow(deprecated)]
+#[verifier::external_body]
+#[vcheck]
+pub fn vcheck_cell_write(v: u32, v2: u32) -> (ret: bool)
+    ensures
+        ret,
+{
+    let (p, Tracked(mut perm)) = PCell::<u32>::new(v);
+    p.write(Tracked(&mut perm), v2);
+    *p.borrow(Tracked(&perm)) == v2
+}
+
 } // verus!

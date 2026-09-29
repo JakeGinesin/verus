@@ -11,25 +11,40 @@
 #![allow(rustdoc::invalid_rust_codeblocks)]
 #![cfg_attr(verus_keep_ghost, feature(atomic_internals))]
 #![cfg_attr(verus_keep_ghost, feature(generic_atomic))]
-#![cfg_attr(verus_keep_ghost, feature(core_intrinsics))]
+#![allow(internal_features)]
+#![feature(core_intrinsics)]
 #![cfg_attr(any(verus_keep_ghost, feature = "allocator"), feature(allocator_api))]
-#![cfg_attr(verus_keep_ghost, feature(step_trait))]
-#![cfg_attr(verus_keep_ghost, feature(ptr_metadata))]
-#![cfg_attr(verus_keep_ghost, feature(sized_hierarchy))]
-#![cfg_attr(verus_keep_ghost, feature(freeze))]
-#![cfg_attr(verus_keep_ghost, feature(derive_clone_copy_internals))]
-#![cfg_attr(verus_keep_ghost, feature(derive_eq_internals))]
+#![feature(step_trait)]
+#![cfg_attr(not(verus_keep_ghost), feature(try_trait_v2))]
+#![feature(ptr_metadata)]
+#![feature(sized_hierarchy)]
+#![feature(freeze)]
+#![feature(derive_clone_copy_internals)]
+#![cfg_attr(not(verus_keep_ghost), feature(tuple_trait))]
+#![cfg_attr(not(verus_keep_ghost), feature(unboxed_closures))]
+#![feature(derive_eq_internals)]
 #![cfg_attr(verus_keep_ghost, feature(slice_index_methods))]
-#![cfg_attr(all(feature = "alloc", verus_keep_ghost), feature(liballoc_internals))]
-#![cfg_attr(verus_keep_ghost, feature(nonzero_internals))]
+#![cfg_attr(feature = "alloc", feature(liballoc_internals))]
+#![feature(nonzero_internals)]
 #![cfg_attr(verus_keep_ghost, feature(hint_must_use))]
 #![cfg_attr(verus_keep_ghost, feature(fmt_internals))]
 #![cfg_attr(verus_keep_ghost, feature(fmt_arguments_from_str))]
-#![cfg_attr(all(feature = "alloc", verus_keep_ghost), feature(btree_cursors))]
+#![cfg_attr(feature = "alloc", feature(btree_cursors))]
 #![cfg_attr(verus_keep_ghost, feature(panic_internals))]
+#![cfg_attr(verus_keep_ghost, feature(macro_attr))]
 
 #[cfg(feature = "alloc")]
 extern crate alloc;
+
+// no-op vcheck labels for verifier builds, where the vcheck hook is off
+#[cfg(verus_keep_ghost)]
+macro_rules! vcheck {
+    attr($($args:tt)*) ($($item:tt)*) => { $($item)* };
+}
+#[cfg(verus_keep_ghost)]
+macro_rules! vcheck_axiom {
+    attr($($args:tt)*) ($($item:tt)*) => { $($item)* };
+}
 
 pub mod arithmetic;
 pub mod array;
@@ -93,7 +108,7 @@ pub mod utf8;
 pub mod view;
 pub mod wrapping;
 
-#[cfg(verus_keep_ghost)]
+// un-gated so vcheck labels in std_specs fire under cargo test
 pub mod std_specs;
 
 // Re-exports all vstd types, traits, and functions that are commonly used or replace
@@ -164,6 +179,10 @@ pub broadcast group group_vstd_default {
 } // verus!
 // This allows us to use `$crate::vstd` or `crate::vstd` to refer to vstd
 // both in verus_verify_core mode (vstd is a module) and out (vstd is a crate)
-#[cfg(not(verus_verify_core))]
+#[cfg(all(not(verus_verify_core), verus_keep_ghost))]
 #[doc(hidden)]
 pub use crate as vstd;
+// lets vcheck output resolve `::vstd` inside vstd
+#[cfg(all(not(verus_verify_core), not(verus_keep_ghost)))]
+#[doc(hidden)]
+pub extern crate self as vstd;

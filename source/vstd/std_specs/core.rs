@@ -126,6 +126,7 @@ pub trait ExMetaSized {
     type ExternalTraitSpecificationFor: core::marker::MetaSized;
 }
 
+#[vcheck(T = u32)]
 pub assume_specification<T>[ core::mem::swap::<T> ](a: &mut T, b: &mut T)
     ensures
         *final(a) == *old(b),
@@ -159,11 +160,13 @@ pub struct ExDuration(core::time::Duration);
 #[verifier::accept_recursive_types(V)]
 pub struct ExPhantomData<V: PointeeSized>(core::marker::PhantomData<V>);
 
+#[vcheck]
 pub assume_specification[ core::intrinsics::likely ](b: bool) -> (c: bool)
     ensures
         c == b,
 ;
 
+#[vcheck]
 pub assume_specification[ core::intrinsics::unlikely ](b: bool) -> (c: bool)
     ensures
         c == b,
@@ -197,7 +200,29 @@ pub assume_specification [core::panicking::panic_fmt] (s: core::fmt::Arguments<'
 
 } // verus!
 
+// verifier attributes outside verus! need a verifier build
+#[cfg(verus_keep_ghost)]
 #[verifier::external_type_specification]
 #[verifier::external_body]
 #[verifier::accept_recursive_types(T)]
 pub struct ExAssertParamIsClone<T: Clone + PointeeSized>(core::clone::AssertParamIsClone<T>);
+
+verus! {
+
+/// `bool::then` runs the closure iff the flag is set
+#[cfg(not(any(verus_verify_core, verus_keep_ghost)))]
+#[verifier::external_body]
+#[vcheck]
+pub fn vcheck_bool_then(b: bool, k: u32) -> (ret: bool)
+    ensures
+        ret,
+{
+    let r = b.then(|| k.wrapping_mul(3));
+    if b {
+        r == Some(k.wrapping_mul(3))
+    } else {
+        r.is_none()
+    }
+}
+
+} // verus!

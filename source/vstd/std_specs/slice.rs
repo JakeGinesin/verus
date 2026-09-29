@@ -1,7 +1,12 @@
 use super::super::prelude::*;
+// spec-trait machinery only exists in verifier builds
+#[cfg(verus_keep_ghost)]
 use super::super::slice::SliceIndexSpec;
+#[cfg(verus_keep_ghost)]
 use super::core::IndexSpec;
+#[cfg(verus_keep_ghost)]
 use super::iter::IteratorSpec;
+#[cfg(verus_keep_ghost)]
 use super::range::{
     ExRange, RangeBoundsSpec, slice_range_end, slice_range_start, slice_range_valid,
 };
@@ -14,6 +19,7 @@ use core::slice::{Iter, IterMut, SliceIndex};
 use verus as verus_skip_verusfmt;
 verus_skip_verusfmt! {
 
+#[cfg(verus_keep_ghost)]
 impl<T> super::super::slice::SliceIndexSpecImpl<[T]> for usize {
     open spec fn in_bounds(&self, slice: &[T]) -> bool {
         *self < slice@.len()
@@ -79,6 +85,7 @@ pub open spec fn generic_slice_index_mut_postcondition<R: RangeBoundsSpec<usize>
            slice_range_end(range, old_slice.len())..old_slice.len()]
 }
 
+#[cfg(verus_keep_ghost)]
 impl<T> super::super::slice::SliceIndexSpecImpl<[T]> for Range<usize> {
     open spec fn in_bounds(&self, slice: &[T]) -> bool {
         generic_slice_in_bounds(self, slice@)
@@ -307,6 +314,7 @@ pub assume_specification<T: PartialEq>[ <[T]>::ends_with ](
         )),
 ;
 
+#[cfg(verus_keep_ghost)]
 impl<T, I: SliceIndex<[T]>> super::core::IndexSpecImpl<I> for [T] {
     open spec fn index_req(&self, index: &I) -> bool {
         index.in_bounds(self)
@@ -343,6 +351,7 @@ pub assume_specification<T, I: SliceIndex<[T]>>[ <[T] as IndexMut<I>>::index_mut
         call_ensures(<I as SliceIndex<[T]>>::index_mut, (index, slice), output),
 ;
 
+#[cfg(verus_keep_ghost)]
 impl<T, I, const N: usize> super::core::IndexSpecImpl<I> for [T; N]
 where
     [T]: Index<I>,
@@ -406,6 +415,7 @@ pub struct ExIter<'a, T: 'a>(Iter<'a, T>);
 // a prophecy, we need a function that gives us the underlying sequence of the original slice.
 pub uninterp spec fn into_iter_elts<'a, T: 'a>(i: Iter<'a, T>) -> Seq<T>;
 
+#[cfg(verus_keep_ghost)]
 impl <'a, T: 'a> super::iter::IteratorSpecImpl for Iter<'a, T> {
     open spec fn obeys_prophetic_iter_laws(&self) -> bool {
         true
@@ -449,6 +459,7 @@ pub struct ExIterMut<'a, T: 'a>(IterMut<'a, T>);
 
 // See exampes/iterators/slice_iter_mut.rs for a verified implementation of this interface.
 // Any changes here should first be verified over there.
+#[cfg(verus_keep_ghost)]
 impl<'a, T: 'a> super::iter::IteratorSpecImpl for IterMut<'a, T> {
     open spec fn obeys_prophetic_iter_laws(&self) -> bool {
         true
@@ -481,6 +492,7 @@ pub assume_specification<'a, T>[ <[T]>::iter_mut ](slice: &'a mut [T]) -> (iter:
         IteratorSpec::decrease(&iter) is Some,
 ;
 
+#[vcheck(T = u32)]
 pub assume_specification<T> [ <[T]>::first ](slice: &[T]) -> (res: Option<&T>)
     ensures
         slice.len() == 0 ==> res.is_none(),
@@ -488,6 +500,7 @@ pub assume_specification<T> [ <[T]>::first ](slice: &[T]) -> (res: Option<&T>)
     no_unwind
 ;
 
+#[vcheck(T = u32)]
 pub assume_specification<T> [ <[T]>::last ](slice: &[T]) -> (res: Option<&T>)
     ensures
         slice.len() == 0 ==> res.is_none(),
@@ -513,12 +526,13 @@ pub assume_specification<T> [ <[T]>::last_mut ](slice: &mut [T]) -> (res: Option
     no_unwind
 ;
 
+#[vcheck(T = u32)]
 pub assume_specification<T> [ <[T]>::split_at ](slice: &[T], mid: usize) -> (ret: (&[T], &[T]))
     requires
         0 <= mid <= slice.len(),
     ensures
-        ret.0@ == slice@[..mid],
-        ret.1@ == slice@[mid..],
+        ret.0@ == slice@.take(mid as int),
+        ret.1@ == slice@.skip(mid as int),
     no_unwind
 ;
 
@@ -611,5 +625,380 @@ pub assume_specification<T: Copy, R: core::ops::RangeBounds<usize>>[ <[T]>::copy
             dest as int,
         ),
 ;
+
+// vcheck wrappers for the guarded slice ops
+
+/// `split_at_checked`: Some of the two subranges iff `mid <= len`
+#[cfg(not(any(verus_verify_core, verus_keep_ghost)))]
+#[verifier::external_body]
+#[vcheck]
+pub fn vcheck_slice_split_at_checked(v: Vec<u32>, mid: u16) -> (ret: bool)
+    ensures
+        ret,
+{
+    let mid = mid as usize;
+    match v.split_at_checked(mid) {
+        Some((a, b)) => mid <= v.len() && a == &v[..mid] && b == &v[mid..],
+        None => mid > v.len(),
+    }
+}
+
+/// `copy_from_slice` (equal-length guard): dst becomes src
+#[cfg(not(any(verus_verify_core, verus_keep_ghost)))]
+#[verifier::external_body]
+#[vcheck]
+pub fn vcheck_slice_copy_from_slice(dst: Vec<u32>, src: Vec<u32>) -> (ret: bool)
+    ensures
+        ret,
+{
+    if dst.len() != src.len() {
+        return true;  // precondition excluded
+    }
+    let mut dst = dst;
+    dst.copy_from_slice(&src);
+    dst == src
+}
+
+/// `copy_within` at `R = Range<usize>` (validity guards discharged by filtering)
+#[cfg(not(any(verus_verify_core, verus_keep_ghost)))]
+#[verifier::external_body]
+#[vcheck]
+pub fn vcheck_slice_copy_within(v: Vec<u32>, start: u16, end: u16, dest: u16) -> (ret: bool)
+    ensures
+        ret,
+{
+    let (start, end, dest) = (start as usize, end as usize, dest as usize);
+    if !(start <= end && end <= v.len()) || dest + (end - start) > v.len() {
+        return true;  // precondition excluded
+    }
+    let mut r = v.clone();
+    r.copy_within(start..end, dest);
+    let count = end - start;
+    (0..v.len()).all(|i| {
+        let expected = if dest <= i && i < dest + count { v[start + (i - dest)] } else { v[i] };
+        r[i] == expected
+    })
+}
+
+} // verus!
+
+verus! {
+
+/// `get` on every slice range kind agrees with the SliceIndexSpec bounds model
+#[cfg(not(any(verus_verify_core, verus_keep_ghost)))]
+#[verifier::external_body]
+#[vcheck]
+pub fn vcheck_slice_get_ranges(v: Vec<u8>, kind: u8, a: u8, b: u8, steps: u8) -> (ret: bool)
+    ensures
+        ret,
+{
+    let len = v.len();
+    let a = a as usize % (len + 3);
+    let b = b as usize % (len + 3);
+    let (lo, hi, got): (i128, i128, Option<&[u8]>) = match kind % 6 {
+        0 => (a as i128, b as i128, v.get(a..b)),
+        1 => (0, b as i128, v.get(..b)),
+        2 => (a as i128, len as i128, v.get(a..)),
+        3 => (0, len as i128, v.get(..)),
+        4 => {
+            let mut r = a..=b;
+            for _ in 0..(steps % 8) {
+                r.next();
+            }
+            let exhausted = r.is_empty() && r.start() <= r.end();
+            let hi = if exhausted {
+                *r.end() as i128
+            } else {
+                *r.end() as i128 + 1
+            };
+            (*r.start() as i128, hi, v.get(r))
+        },
+        _ => (0, b as i128 + 1, v.get(..=b)),
+    };
+    let in_bounds = 0 <= lo && lo <= hi && hi <= len as i128;
+    match got {
+        Some(x) => in_bounds && x == &v[lo as usize..hi as usize],
+        None => !in_bounds,
+    }
+}
+
+/// `get_mut` on inclusive ranges agrees with the bounds model and writes through
+#[cfg(not(any(verus_verify_core, verus_keep_ghost)))]
+#[verifier::external_body]
+#[vcheck]
+pub fn vcheck_slice_get_mut_inclusive(v: Vec<u8>, a: u8, b: u8, steps: u8, w: u8) -> (ret: bool)
+    ensures
+        ret,
+{
+    let len = v.len();
+    let a = a as usize % (len + 3);
+    let b = b as usize % (len + 3);
+    let mut r = a..=b;
+    for _ in 0..(steps % 8) {
+        r.next();
+    }
+    let exhausted = r.is_empty() && r.start() <= r.end();
+    let lo = *r.start() as i128;
+    let hi = if exhausted {
+        *r.end() as i128
+    } else {
+        *r.end() as i128 + 1
+    };
+    let in_bounds = lo <= hi && hi <= len as i128;
+    let mut v2 = v.clone();
+    match v2.get_mut(r) {
+        Some(x) => {
+            let ok = in_bounds && x.len() as i128 == hi - lo;
+            for e in x.iter_mut() {
+                *e = w;
+            }
+            let mut exp = v.clone();
+            if in_bounds {
+                for i in lo as usize..hi as usize {
+                    exp[i] = w;
+                }
+            }
+            ok && v2 == exp
+        },
+        None => !in_bounds && v2 == v,
+    }
+}
+
+} // verus!
+
+verus! {
+
+/// `starts_with` / `ends_with` against the spec fns, with needles cut from the haystack
+#[cfg(not(any(verus_verify_core, verus_keep_ghost)))]
+#[verifier::external_body]
+#[vcheck]
+pub fn vcheck_slice_starts_ends_with(s: Vec<u8>, k: u8, flip: u8, extra: bool, tail: bool) -> (ret: bool)
+    ensures
+        ret,
+{
+    let len = s.len();
+    let k = (k as usize) % (len + 2);
+    let mut needle: Vec<u8> = if tail {
+        s[len - k.min(len)..].to_vec()
+    } else {
+        s[..k.min(len)].to_vec()
+    };
+    if extra {
+        needle.push(7);
+    }
+    if !needle.is_empty() && flip % 3 == 0 {
+        let i = (flip as usize) % needle.len();
+        needle[i] = needle[i].wrapping_add(1);
+    }
+    let n = needle.len();
+    let spec = n <= len && (0..n).all(
+        |i|
+            if tail {
+                s[len - n + i] == needle[i]
+            } else {
+                s[i] == needle[i]
+            },
+    );
+    let result = if tail {
+        s.ends_with(&needle)
+    } else {
+        s.starts_with(&needle)
+    };
+    (n <= len || !result) && result == spec
+}
+
+/// `first_mut` / `last_mut` read the end element and write through to the slice
+#[cfg(not(any(verus_verify_core, verus_keep_ghost)))]
+#[verifier::external_body]
+#[vcheck]
+pub fn vcheck_slice_first_last_mut(v: Vec<u32>, w: u32, last: bool) -> (ret: bool)
+    ensures
+        ret,
+{
+    let mut v2 = v.clone();
+    let r = if last {
+        v2.as_mut_slice().last_mut()
+    } else {
+        v2.as_mut_slice().first_mut()
+    };
+    match r {
+        None => v.is_empty() && v2.is_empty(),
+        Some(x) => {
+            let i = if last {
+                v.len() - 1
+            } else {
+                0
+            };
+            let ok = !v.is_empty() && *x == v[i];
+            *x = w;
+            let mut exp = v.clone();
+            exp[i] = w;
+            ok && v2 == exp
+        },
+    }
+}
+
+/// `split_first` / `split_first_mut` split off the head, with writes through both parts
+#[cfg(not(any(verus_verify_core, verus_keep_ghost)))]
+#[verifier::external_body]
+#[vcheck]
+pub fn vcheck_slice_split_first(v: Vec<u32>, w: u32, w2: u32) -> (ret: bool)
+    ensures
+        ret,
+{
+    let shared_ok = match v.split_first() {
+        None => v.is_empty(),
+        Some((a, b)) => !v.is_empty() && *a == v[0] && b == &v[1..],
+    };
+    let mut v2 = v.clone();
+    let mut_ok = match v2.as_mut_slice().split_first_mut() {
+        None => v.is_empty(),
+        Some((a, b)) => {
+            let ok = !v.is_empty() && *a == v[0] && &*b == &v[1..];
+            *a = w;
+            if let Some(y) = b.last_mut() {
+                *y = w2;
+            }
+            ok
+        },
+    };
+    let mut exp = v.clone();
+    if !exp.is_empty() {
+        exp[0] = w;
+        if exp.len() > 1 {
+            let l = exp.len() - 1;
+            exp[l] = w2;
+        }
+    }
+    shared_ok && mut_ok && v2 == exp
+}
+
+/// `split_at_mut` halves match the subranges and writes flow back into the slice
+#[cfg(not(any(verus_verify_core, verus_keep_ghost)))]
+#[verifier::external_body]
+#[vcheck]
+pub fn vcheck_slice_split_at_mut(v: Vec<u32>, mid: u8, w: u32, w2: u32) -> (ret: bool)
+    ensures
+        ret,
+{
+    let mid = (mid as usize) % (v.len() + 1);
+    let mut v2 = v.clone();
+    let (a, b) = v2.as_mut_slice().split_at_mut(mid);
+    let ok = &*a == &v[..mid] && &*b == &v[mid..];
+    if let Some(x) = a.last_mut() {
+        *x = w;
+    }
+    if let Some(y) = b.first_mut() {
+        *y = w2;
+    }
+    let mut exp = v.clone();
+    if mid > 0 {
+        exp[mid - 1] = w;
+    }
+    if mid < exp.len() {
+        exp[mid] = w2;
+    }
+    ok && v2 == exp
+}
+
+/// `iter` / `into_iter` yield exactly the slice's elements in order
+#[cfg(not(any(verus_verify_core, verus_keep_ghost)))]
+#[verifier::external_body]
+#[vcheck]
+pub fn vcheck_slice_iter(v: Vec<u32>) -> (ret: bool)
+    ensures
+        ret,
+{
+    let a: Vec<u32> = v.as_slice().iter().copied().collect();
+    let b: Vec<u32> = (&v[..]).into_iter().copied().collect();
+    a == v && b == v
+}
+
+/// `iter_mut` yields references to each element whose final values flow back
+#[cfg(not(any(verus_verify_core, verus_keep_ghost)))]
+#[verifier::external_body]
+#[vcheck]
+pub fn vcheck_slice_iter_mut(v: Vec<u32>, w: u32) -> (ret: bool)
+    ensures
+        ret,
+{
+    let mut v2 = v.clone();
+    let mut ok = true;
+    let mut n = 0usize;
+    for (i, r) in v2.as_mut_slice().iter_mut().enumerate() {
+        ok = ok && *r == v[i];
+        *r = w.wrapping_add(i as u32);
+        n += 1;
+    }
+    ok && n == v.len() && (0..v.len()).all(|i| v2[i] == w.wrapping_add(i as u32))
+}
+
+/// usize `get` / `get_mut` agree with `in_bounds`, and `get_mut` writes through
+#[cfg(not(any(verus_verify_core, verus_keep_ghost)))]
+#[verifier::external_body]
+#[vcheck]
+pub fn vcheck_slice_get_usize(v: Vec<u32>, i: u8, w: u32) -> (ret: bool)
+    ensures
+        ret,
+{
+    let i = (i as usize) % (v.len() + 2);
+    let g = match v.get(i) {
+        Some(x) => i < v.len() && *x == v[i],
+        None => i >= v.len(),
+    };
+    let mut v2 = v.clone();
+    let gm = match v2.get_mut(i) {
+        Some(x) => {
+            let ok = i < v.len() && *x == v[i];
+            *x = w;
+            ok
+        },
+        None => i >= v.len(),
+    };
+    let mut exp = v.clone();
+    if i < exp.len() {
+        exp[i] = w;
+    }
+    g && gm && v2 == exp
+}
+
+} // verus!
+
+verus! {
+
+/// `all` / `any` / `find` on a slice iterator consume exactly through the deciding element
+#[cfg(not(any(verus_verify_core, verus_keep_ghost)))]
+#[verifier::external_body]
+#[vcheck]
+pub fn vcheck_iter_all_any_find(v: Vec<u8>, k: u8) -> (ret: bool)
+    ensures
+        ret,
+{
+    let pred = |x: &u8| *x < k;
+    let first_fail = v.iter().position(|x| !pred(x));
+    let first_hit = v.iter().position(|x| pred(x));
+    let mut it = v.iter();
+    let r_all = it.all(|x| pred(x));
+    let rest_all = it.as_slice().len();
+    let all_ok = match first_fail {
+        None => r_all && rest_all == 0,
+        Some(i) => !r_all && rest_all == v.len() - i - 1,
+    };
+    let mut it = v.iter();
+    let r_any = it.any(|x| pred(x));
+    let rest_any = it.as_slice().len();
+    let any_ok = match first_hit {
+        None => !r_any && rest_any == 0,
+        Some(i) => r_any && rest_any == v.len() - i - 1,
+    };
+    let mut it = v.iter();
+    let r_find = it.find(|x| pred(*x)).copied();
+    let rest_find = it.as_slice().len();
+    let find_ok = match first_hit {
+        None => r_find.is_none() && rest_find == 0,
+        Some(i) => r_find == Some(v[i]) && rest_find == v.len() - i - 1,
+    };
+    all_ok && any_ok && find_ok
+}
 
 } // verus!

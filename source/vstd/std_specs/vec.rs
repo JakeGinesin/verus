@@ -1,8 +1,12 @@
 use super::super::prelude::*;
+// the iter/core spec-trait machinery stays gated on `verus_keep_ghost`
+#[cfg(verus_keep_ghost)]
 use super::iter::{FromIteratorSpecImpl, IteratorSpec};
 use verus_builtin::*;
 
+#[cfg(verus_keep_ghost)]
 use super::super::slice::SliceIndexSpec;
+#[cfg(verus_keep_ghost)]
 use super::core::IndexSpec;
 use alloc::collections::TryReserveError;
 use alloc::vec::{IntoIter, Vec};
@@ -50,6 +54,7 @@ pub struct ExTryReserveError(alloc::collections::TryReserveError);
 // `vec[i]` to this function here from rust_to_vir_expr.
 #[verifier::external_body]
 #[cfg_attr(verus_keep_ghost, rustc_diagnostic_item = "verus::vstd::std_specs::vec::vec_index")]
+#[vcheck(T = u32, A = alloc::alloc::Global)]
 pub fn vec_index<T, A: Allocator>(vec: &Vec<T, A>, i: usize) -> (element: &T)
     requires
         i < vec.view().len(),
@@ -89,6 +94,7 @@ pub broadcast proof fn axiom_spec_len<T, A: Allocator>(v: &Vec<T, A>)
     admit();
 }
 
+// (no vcheck on the assume_specification: `spec_vec_len` is uninterp)
 #[verifier::when_used_as_spec(spec_vec_len)]
 pub assume_specification<T, A: Allocator>[ Vec::<T, A>::len ](vec: &Vec<T, A>) -> (len: usize)
     ensures
@@ -96,12 +102,94 @@ pub assume_specification<T, A: Allocator>[ Vec::<T, A>::len ](vec: &Vec<T, A>) -
     no_unwind
 ;
 
+#[cfg(not(any(verus_verify_core, verus_keep_ghost)))]
+#[verifier::external_body]
+#[vcheck]
+pub fn vcheck_vec_len(vec: Vec<u32>) -> (len: usize)
+    ensures
+        len == vec@.len(),
+{
+    Vec::<u32>::len(&vec)
+}
+
+// Bounded-size wrappers for the allocation-hazard family: the sampled size is `u16`
+#[cfg(not(any(verus_verify_core, verus_keep_ghost)))]
+#[verifier::external_body]
+#[vcheck]
+pub fn vcheck_vec_with_capacity_bounded(capacity: u16) -> (v: Vec<u32>)
+    ensures
+        v@ == Seq::<u32>::empty(),
+{
+    Vec::<u32>::with_capacity(capacity as usize)
+}
+
+#[cfg(not(any(verus_verify_core, verus_keep_ghost)))]
+#[verifier::external_body]
+#[vcheck]
+pub fn vcheck_vec_reserve_bounded(vec: &mut Vec<u32>, additional: u16)
+    ensures
+        final(vec)@ == old(vec)@,
+{
+    Vec::<u32>::reserve(vec, additional as usize)
+}
+
+#[cfg(not(any(verus_verify_core, verus_keep_ghost)))]
+#[verifier::external_body]
+#[vcheck]
+pub fn vcheck_vec_from_elem_bounded(elem: u32, n: u16) -> (ret: bool)
+    ensures ret,
+{
+    let v = alloc::vec::from_elem(elem, n as usize);
+    v.len() == n as usize && v.iter().all(|x| *x == elem)
+}
+
+/// `Vec::resize` over the bounded (u16) size domain: truncates or extends with the fill value
+#[cfg(not(any(verus_verify_core, verus_keep_ghost)))]
+#[verifier::external_body]
+#[vcheck]
+pub fn vcheck_vec_resize_bounded(vec: Vec<u32>, n: u16, value: u32) -> (ret: bool)
+    ensures ret,
+{
+    let mut v = vec.clone();
+    v.resize(n as usize, value);
+    let n = n as usize;
+    v.len() == n
+        && v[..n.min(vec.len())] == vec[..n.min(vec.len())]
+        && v[n.min(vec.len())..].iter().all(|x| *x == value)
+}
+
+/// `Vec::new_in` at `A = Global` is empty
+#[cfg(not(any(verus_verify_core, verus_keep_ghost)))]
+#[verifier::external_body]
+#[vcheck]
+pub fn vcheck_vec_new_in_global() -> (ret: bool)
+    ensures ret,
+{
+    let v: Vec<u32> = Vec::new_in(alloc::alloc::Global);
+    v.is_empty()
+}
+
+/// Bare `<Vec as PartialEq>::eq` spec (contract lives in the spec-impl trait)
+#[cfg(not(any(verus_verify_core, verus_keep_ghost)))]
+#[verifier::external_body]
+#[vcheck]
+pub fn vcheck_vec_eq(x: Vec<u32>, y: Vec<u32>) -> (ret: bool)
+    ensures ret,
+{
+    (x == y) == (x.len() == y.len() && x.iter().zip(y.iter()).all(|(a, b)| a == b))
+        && x == x
+}
+
+
+
 ////// Other functions
+#[vcheck(T = u32)]
 pub assume_specification<T>[ Vec::<T>::new ]() -> (v: Vec<T>)
     ensures
         v@ == Seq::<T>::empty(),
 ;
 
+#[vcheck(T = u32)]
 pub assume_specification<T>[ <Vec<T> as core::default::Default>::default ]() -> (v: Vec<T>)
     ensures
         v@ == Seq::<T>::empty(),
@@ -112,6 +200,7 @@ pub assume_specification<T, A: Allocator>[ Vec::<T, A>::new_in ](alloc: A) -> (v
         v@ == Seq::<T>::empty(),
 ;
 
+// (no vcheck directly on with_capacity / reserve / try_reserve / from_elem)
 pub assume_specification<T>[ Vec::<T>::with_capacity ](capacity: usize) -> (v: Vec<T>)
     ensures
         v@ == Seq::<T>::empty(),
@@ -130,6 +219,7 @@ pub assume_specification<T, A: Allocator>[ Vec::<T, A>::reserve ](
         final(vec)@ == old(vec)@,
 ;
 
+#[vcheck(T = u32, A = alloc::alloc::Global)] // vc#1359
 pub assume_specification<T, A: Allocator>[ Vec::<T, A>::try_reserve ](
     vec: &mut Vec<T, A>,
     additional: usize,
@@ -138,19 +228,22 @@ pub assume_specification<T, A: Allocator>[ Vec::<T, A>::try_reserve ](
         final(vec)@ == old(vec)@,
 ;
 
+#[vcheck(T = u32, A = alloc::alloc::Global)]
 pub assume_specification<T, A: Allocator>[ Vec::<T, A>::push ](vec: &mut Vec<T, A>, value: T)
     ensures
         final(vec)@ == old(vec)@.push(value),
 ;
 
+#[vcheck(T = u32, A = alloc::alloc::Global)]
 pub assume_specification<T, A: Allocator>[ Vec::<T, A>::pop ](vec: &mut Vec<T, A>) -> (value:
     Option<T>)
     ensures
         old(vec)@.len() > 0 ==> value == Some(old(vec)@[old(vec)@.len() - 1])
-            && final(vec)@ == old(vec)@[..old(vec)@.len() - 1],
+            && final(vec)@ == old(vec)@.take(old(vec)@.len() - 1),
         old(vec)@.len() == 0 ==> value == None::<T> && final(vec)@ == old(vec)@,
 ;
 
+#[vcheck(T = u32, A = alloc::alloc::Global)]
 pub assume_specification<T, A: Allocator>[ Vec::<T, A>::append ](
     vec: &mut Vec<T, A>,
     other: &mut Vec<T, A>,
@@ -160,6 +253,7 @@ pub assume_specification<T, A: Allocator>[ Vec::<T, A>::append ](
         final(other)@ == Seq::<T>::empty(),
 ;
 
+// (no vcheck: the quantified ensures mixes `final(vec)@[i]` with an if/else over `old(vec)`)
 pub assume_specification<T: core::clone::Clone, A: Allocator>[ Vec::<T, A>::extend_from_slice ](
     vec: &mut Vec<T, A>,
     other: &[T],
@@ -175,6 +269,7 @@ pub assume_specification<T: core::clone::Clone, A: Allocator>[ Vec::<T, A>::exte
             },
 ;
 
+#[cfg(verus_keep_ghost)]
 impl<T: Sized, I: SliceIndex<[T]>, A: Allocator> super::core::IndexSpecImpl<I> for Vec<T, A> {
     open spec fn index_req(&self, index: &I) -> bool {
         forall|s: &[T]| #[trigger] s@ == self@ ==> index.in_bounds(s)
@@ -189,6 +284,7 @@ pub assume_specification<T, I: SliceIndex<[T]>, A: Allocator>[Vec::<T, A>::index
         exists|s: &[T]| #[trigger] s@ == vec@ && call_ensures(<I as SliceIndex<[T]>>::index, (i, s), r),
 ;
 
+#[vcheck(T = u32, A = alloc::alloc::Global)]
 pub assume_specification<T, A: Allocator>[ Vec::<T, A>::swap_remove ](
     vec: &mut Vec<T, A>,
     i: usize,
@@ -200,6 +296,7 @@ pub assume_specification<T, A: Allocator>[ Vec::<T, A>::swap_remove ](
         final(vec)@ == old(vec)@.update(i as int, old(vec)@.last()).drop_last(),
 ;
 
+#[vcheck(T = u32, A = alloc::alloc::Global)]
 pub assume_specification<T, A: Allocator>[ Vec::<T, A>::insert ](
     vec: &mut Vec<T, A>,
     i: usize,
@@ -211,12 +308,14 @@ pub assume_specification<T, A: Allocator>[ Vec::<T, A>::insert ](
         final(vec)@ == old(vec)@.insert(i as int, element),
 ;
 
+#[vcheck(T = u32, A = alloc::alloc::Global)]
 pub assume_specification<T, A: Allocator> [ <Vec<T, A>>::is_empty ](
     v: &Vec<T, A>,
 ) -> (res: bool)
     ensures res <==> v@.len() == 0,
 ;
 
+#[vcheck(T = u32, A = alloc::alloc::Global)]
 pub assume_specification<T, A: Allocator>[ Vec::<T, A>::remove ](
     vec: &mut Vec<T, A>,
     i: usize,
@@ -228,23 +327,27 @@ pub assume_specification<T, A: Allocator>[ Vec::<T, A>::remove ](
         final(vec)@ == old(vec)@.remove(i as int),
 ;
 
+#[vcheck(T = u32, A = alloc::alloc::Global)]
 pub assume_specification<T, A: Allocator>[ Vec::<T, A>::clear ](vec: &mut Vec<T, A>)
     ensures
         final(vec).view() == Seq::<T>::empty(),
 ;
 
+#[vcheck(T = u32, A = alloc::alloc::Global)]
 pub assume_specification<T, A: Allocator>[ Vec::<T, A>::as_slice ](vec: &Vec<T, A>) -> (slice: &[T])
     ensures
         slice@ == vec@,
 ;
 
 #[doc(hidden)]
+#[vcheck(T = u32, A = alloc::alloc::Global)] // vc#1357
 pub assume_specification<T, A: Allocator>[ Vec::<T, A>::as_mut_slice ](vec: &mut Vec<T, A>) -> (slice: &mut [T])
     ensures
         slice@ == old(vec)@,
         final(slice)@ == final(vec)@,
 ;
 
+#[vcheck(T = u32, A = alloc::alloc::Global)]
 pub assume_specification<T, A: Allocator>[ <Vec<T, A> as core::ops::Deref>::deref ](
     vec: &Vec<T, A>,
 ) -> (slice: &[T])
@@ -252,6 +355,7 @@ pub assume_specification<T, A: Allocator>[ <Vec<T, A> as core::ops::Deref>::dere
         slice@ == vec@,
 ;
 
+#[vcheck(T = u32, A = alloc::alloc::Global)] // vc#1356
 pub assume_specification<T, A: Allocator>[ <Vec<T, A> as core::ops::DerefMut>::deref_mut ](
     vec: &mut Vec<T, A>,
 ) -> (slice: &mut [T])
@@ -260,6 +364,7 @@ pub assume_specification<T, A: Allocator>[ <Vec<T, A> as core::ops::DerefMut>::d
         final(slice)@ == final(vec)@,
 ;
 
+#[vcheck(T = u32, A = alloc::alloc::Global)]
 pub assume_specification<T, A: Allocator + core::clone::Clone>[ Vec::<T, A>::split_off ](
     vec: &mut Vec<T, A>,
     at: usize,
@@ -267,14 +372,15 @@ pub assume_specification<T, A: Allocator + core::clone::Clone>[ Vec::<T, A>::spl
     requires
         at <= old(vec)@.len(),
     ensures
-        final(vec)@ == old(vec)@[..at],
-        return_value@ == old(vec)@[at..],
+        final(vec)@ == old(vec)@.take(at as int),
+        return_value@ == old(vec)@.skip(at as int),
 ;
 
 pub open spec fn vec_clone_trigger<T, A: Allocator>(v1: Vec<T, A>, v2: Vec<T, A>) -> bool {
     true
 }
 
+// (no vcheck: the ensures references `vec_clone_trigger`, a spec fn over `Vec<T, A>`)
 pub assume_specification<T: Clone, A: Allocator + Clone>[ <Vec<T, A> as Clone>::clone ](
     vec: &Vec<T, A>,
 ) -> (res: Vec<T, A>)
@@ -297,9 +403,10 @@ pub broadcast proof fn vec_clone_deep_view_proof<T: DeepView, A: Allocator>(
 {
 }
 
+#[vcheck(T = u32, A = alloc::alloc::Global)]
 pub assume_specification<T, A: Allocator>[ Vec::<T, A>::truncate ](vec: &mut Vec<T, A>, len: usize)
     ensures
-        len <= old(vec).len() ==> final(vec)@ == old(vec)@[..len],
+        len <= old(vec).len() ==> final(vec)@ == old(vec)@.take(len as int),
         len > old(vec).len() ==> final(vec)@ == old(vec)@,
 ;
 
@@ -332,6 +439,7 @@ pub assume_specification<T: PartialEq<U>, U, A1: Allocator, A2: Allocator>[ <Vec
 ) -> bool
 ;
 
+#[cfg(verus_keep_ghost)]
 impl<T: super::cmp::PartialEqSpec<U>, U, A1: Allocator, A2: Allocator> super::cmp::PartialEqSpecImpl<Vec<U, A2>> for Vec<T, A1> {
     open spec fn obeys_eq_spec() -> bool {
         T::obeys_eq_spec()
@@ -355,6 +463,7 @@ pub struct ExIntoIter<T, A: Allocator>(IntoIter<T, A>);
 // a prophecy, we need a function that gives us the underlying sequence of the original vec.
 pub uninterp spec fn into_iter_elts<T, A: Allocator>(i: IntoIter<T, A>) -> Seq<T>;
 
+#[cfg(verus_keep_ghost)]
 impl <T, A: Allocator> super::iter::IteratorSpecImpl for IntoIter<T, A> {
     open spec fn obeys_prophetic_iter_laws(&self) -> bool {
         true
@@ -373,6 +482,7 @@ impl <T, A: Allocator> super::iter::IteratorSpecImpl for IntoIter<T, A> {
     }
 }
 
+#[cfg(verus_keep_ghost)]
 impl <T, A: Allocator> super::iter::DoubleEndedIteratorSpecImpl for IntoIter<T, A> {
     open spec fn peek_back(&self, index: int) -> Option<Self::Item> {
         let len = into_iter_elts(*self).len();
@@ -408,6 +518,7 @@ pub assume_specification<'a, T, A: Allocator> [<&'a Vec<T, A> as core::iter::Int
         IteratorSpec::decrease(&iter) is Some,
 ;
 
+#[cfg(verus_keep_ghost)]
 impl<T>  FromIteratorSpecImpl<T> for Vec<T> {
     open spec fn from_iter_ensures(remaining: Seq<T>, s: Self) -> bool {
         remaining == s@
@@ -484,5 +595,102 @@ pub axiom fn tracked_borrow_mut_slice<T, A: Allocator>(tracked vec: &mut Vec<T, 
         (*t)@ == old(vec)@,
         (*t).len() == final(t).len(),
         final(vec)@ == final(t)@;
+
+} // verus!
+
+verus! {
+
+/// `extend_from_slice` appends clones of the other slice
+#[cfg(not(any(verus_verify_core, verus_keep_ghost)))]
+#[verifier::external_body]
+#[vcheck]
+pub fn vcheck_vec_extend_from_slice(v: Vec<u32>, other: Vec<u32>) -> (ret: bool)
+    ensures
+        ret,
+{
+    let mut v2 = v.clone();
+    v2.extend_from_slice(&other);
+    v2.len() == v.len() + other.len() && (0..v2.len()).all(
+        |i|
+            if i < v.len() {
+                v2[i] == v[i]
+            } else {
+                v2[i] == other[i - v.len()]
+            },
+    )
+}
+
+/// `clone` copies element-wise and preserves the view
+#[cfg(not(any(verus_verify_core, verus_keep_ghost)))]
+#[verifier::external_body]
+#[vcheck]
+pub fn vcheck_vec_clone(v: Vec<u32>) -> (ret: bool)
+    ensures
+        ret,
+{
+    let c = <Vec<u32> as Clone>::clone(&v);
+    c.len() == v.len() && (0..v.len()).all(|i| c[i] == v[i])
+}
+
+/// `Index` on Vec by usize and by ranges agrees with slice indexing when it returns
+#[cfg(not(any(verus_verify_core, verus_keep_ghost)))]
+#[verifier::external_body]
+#[vcheck]
+pub fn vcheck_vec_index(v: Vec<u32>, a: u8, b: u8) -> (ret: bool)
+    ensures
+        ret,
+{
+    let len = v.len();
+    if len == 0 {
+        return true;  // precondition excluded
+    }
+    let i = (a as usize) % len;
+    let (lo, hi) = {
+        let x = (a as usize) % (len + 1);
+        let y = (b as usize) % (len + 1);
+        if x <= y {
+            (x, y)
+        } else {
+            (y, x)
+        }
+    };
+    let e = &v[i];
+    let r = &v[lo..hi];
+    *e == v.as_slice()[i] && r == &v.as_slice()[lo..hi] && r.len() == hi - lo
+}
+
+/// `into_iter` on Vec and &Vec yields the elements in order
+#[cfg(not(any(verus_verify_core, verus_keep_ghost)))]
+#[verifier::external_body]
+#[vcheck]
+pub fn vcheck_vec_into_iter(v: Vec<u32>) -> (ret: bool)
+    ensures
+        ret,
+{
+    let by_ref: Vec<u32> = (&v).into_iter().copied().collect();
+    let owned: Vec<u32> = v.clone().into_iter().collect();
+    by_ref == v && owned == v
+}
+
+/// `vec_index_mut` returns the element and writes flow back into the vector
+#[cfg(not(any(verus_verify_core, verus_keep_ghost)))]
+#[verifier::external_body]
+#[vcheck]
+pub fn vcheck_vec_index_mut(v: Vec<u32>, i: u8, w: u32) -> (ret: bool)
+    ensures
+        ret,
+{
+    if v.is_empty() {
+        return true;  // precondition excluded
+    }
+    let i = (i as usize) % v.len();
+    let mut v2 = v.clone();
+    let e = vec_index_mut(&mut v2, i);
+    let ok = *e == v[i];
+    *e = w;
+    let mut exp = v.clone();
+    exp[i] = w;
+    ok && v2 == exp && v2[i] == w
+}
 
 } // verus!

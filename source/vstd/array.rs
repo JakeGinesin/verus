@@ -60,6 +60,7 @@ pub broadcast proof fn lemma_array_index<T, const N: usize>(a: [T; N], i: int)
 }
 
 impl<T, const N: usize> ArrayAdditionalExecFns<T> for [T; N] {
+    #[vcheck(T = u8, N = 4)]
     #[verifier::external_body]
     fn set(&mut self, idx: usize, t: T)
         requires
@@ -71,6 +72,7 @@ impl<T, const N: usize> ArrayAdditionalExecFns<T> for [T; N] {
     }
 }
 
+#[vcheck(T = u8, N = 4)]
 #[verifier::external_body]
 #[cfg_attr(verus_keep_ghost, rustc_diagnostic_item = "verus::vstd::array::array_index_get")]
 pub exec fn array_index_get<T, const N: usize>(ar: &[T; N], i: usize) -> (out: &T)
@@ -82,6 +84,7 @@ pub exec fn array_index_get<T, const N: usize>(ar: &[T; N], i: usize) -> (out: &
     &ar[i]
 }
 
+#[vcheck_axiom(T = u8, N = 4)]
 pub broadcast axiom fn array_len_matches_n<T, const N: usize>(ar: &[T; N])
     ensures
         (#[trigger] ar@.len()) == N,
@@ -112,6 +115,7 @@ pub assume_specification<
 #[verifier::external_body]
 #[verifier::when_used_as_spec(spec_array_as_slice)]
 #[cfg_attr(verus_keep_ghost, rustc_diagnostic_item = "verus::vstd::array::array_as_slice")]
+// (no direct vcheck: the first ensures clause compares against the uninterp)
 pub fn array_as_slice<T, const N: usize>(ar: &[T; N]) -> (out: &[T])
     ensures
         out == spec_array_as_slice(ar),
@@ -120,10 +124,24 @@ pub fn array_as_slice<T, const N: usize>(ar: &[T; N]) -> (out: &[T])
     ar
 }
 
+#[vcheck(T = u8, N = 4)]
 pub assume_specification<T, const N: usize>[ <[T; N]>::as_slice ](ar: &[T; N]) -> (out: &[T])
     ensures
         ar@ == out@,
 ;
+
+/// `array_as_slice` (vstd exec twin for the unsizing coercion)
+#[cfg(not(any(verus_verify_core, verus_keep_ghost)))]
+#[verifier::external_body]
+#[vcheck]
+pub fn vcheck_array_as_slice(a: u32, b: u32, c: u32, d: u32) -> (ret: bool)
+    ensures
+        ret,
+{
+    let ar = [a, b, c, d];
+    let out: &[u32] = array_as_slice(&ar);
+    out.len() == 4 && out == [a, b, c, d]
+}
 
 pub uninterp spec fn spec_array_fill_for_copy_type<T: Copy, const N: usize>(t: T) -> (res: [T; N]);
 
@@ -148,6 +166,34 @@ pub fn array_fill_for_copy_types<T: Copy, const N: usize>(t: T) -> (res: [T; N])
     [t;N]
 }
 
+/// `axiom_spec_array_update` composed with the exec assignment it models
+#[cfg(not(any(verus_verify_core, verus_keep_ghost)))]
+#[verifier::external_body]
+#[vcheck]
+pub fn vcheck_array_update(a: u32, b: u32, c: u32, d: u32, i: u8, t: u32) -> (ret: bool)
+    ensures
+        ret,
+{
+    let old = [a, b, c, d];
+    let i = (i % 4) as usize;  // sample inside the 0 <= i < N guard
+    let mut arr = old;
+    arr[i] = t;
+    (0..4).all(|j| arr[j] == if j == i { t } else { old[j] })
+}
+
+/// `array_fill_for_copy_types` composed with its pinning axiom
+#[cfg(not(any(verus_verify_core, verus_keep_ghost)))]
+#[verifier::external_body]
+#[vcheck]
+pub fn vcheck_array_fill_for_copy_types(t: u32) -> (ret: bool)
+    ensures
+        ret,
+{
+    let res: [u32; 4] = array_fill_for_copy_types(t);
+    res.iter().all(|x| *x == t)
+}
+
+#[vcheck_axiom(T = u8, N = 4)]
 pub broadcast axiom fn axiom_array_ext_equal<T, const N: usize>(a1: [T; N], a2: [T; N])
     ensures
         #[trigger] (a1 =~= a2) <==> (forall|i: int| 0 <= i < N ==> a1[i] == a2[i]),
@@ -172,6 +218,7 @@ pub broadcast axiom fn axiom_array_has_resolved<T, const N: usize>(array: [T; N]
 #[doc(hidden)]
 #[verifier::external_body]
 #[cfg_attr(verus_keep_ghost, rustc_diagnostic_item = "verus::vstd::array::ref_mut_array_unsizing_coercion")]
+#[vcheck(T = u32, N = 4)] // vc#1000
 pub fn ref_mut_array_unsizing_coercion<T, const N: usize>(r: &mut [T; N]) -> (out: &mut [T])
     ensures
         out.view() == old(r).view(),

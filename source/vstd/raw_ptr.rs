@@ -428,6 +428,17 @@ pub assume_specification<
     no_unwind
 ;
 
+/// `core::ptr::null` / `null_mut` (composed with the `ptr_null` view specs)
+#[cfg(not(any(verus_verify_core, verus_keep_ghost)))]
+#[verifier::external_body]
+#[vcheck]
+pub fn vcheck_ptr_null() -> (ret: bool)
+    ensures
+        ret,
+{
+    core::ptr::null::<u32>().addr() == 0 && core::ptr::null_mut::<u32>().addr() == 0
+}
+
 //////////////////////////////////////
 // Casting
 // as-casts and implicit casts are translated internally to these functions
@@ -576,6 +587,7 @@ pub fn cast_ptr_to_usize<T: Sized>(ptr: *mut T) -> (result: usize)
 /// This is appropriate for initializing uninitialized memory, or overwriting memory that has previously been [read](ptr_mut_read) from.
 #[inline(always)]
 #[verifier::external_body]
+#[vcheck(T = u32)]
 pub fn ptr_mut_write<T>(ptr: *mut T, Tracked(perm): Tracked<&mut PointsTo<T>>, v: T)
     requires
         old(perm).ptr() == ptr,
@@ -599,6 +611,7 @@ pub fn ptr_mut_write<T>(ptr: *mut T, Tracked(perm): Tracked<&mut PointsTo<T>>, v
 /// without destroying it; should be able to leave the bytes intact without uninitializing them).
 #[inline(always)]
 #[verifier::external_body]
+#[vcheck(T = u32)]
 pub fn ptr_mut_read<T>(ptr: *const T, Tracked(perm): Tracked<&mut PointsTo<T>>) -> (v: T)
     requires
         old(perm).ptr() == ptr,
@@ -617,6 +630,7 @@ pub fn ptr_mut_read<T>(ptr: *const T, Tracked(perm): Tracked<&mut PointsTo<T>>) 
 /// The memory pointed to by `ptr` must be initialized.
 #[inline(always)]
 #[verifier::external_body]
+#[vcheck(T = u32)]
 pub fn ptr_ref<T>(ptr: *const T, Tracked(perm): Tracked<&PointsTo<T>>) -> (v: &T)
     requires
         perm.ptr() == ptr,
@@ -633,6 +647,7 @@ pub fn ptr_ref<T>(ptr: *const T, Tracked(perm): Tracked<&PointsTo<T>>) -> (v: &T
 /// The memory pointed to by `ptr` must be initialized.
 #[inline(always)]
 #[verifier::external_body]
+#[vcheck(T = u32)]
 pub fn ptr_mut_ref<T>(ptr: *mut T, Tracked(perm): Tracked<&mut PointsTo<T>>) -> (v: &mut T)
     requires
         old(perm).ptr() == ptr,
@@ -1050,6 +1065,174 @@ pub fn ptr_ref2<'a, T>(ptr: *const T, Tracked(perm): Tracked<&PointsTo<T>>) -> (
     no_unwind
 {
     SharedReference(unsafe { &*ptr })
+}
+
+// vcheck harnesses for the tracked-permission pointer API
+
+/// Thin-pointer equality (`<*mut T as PartialEq>::eq` / `<*const T>`)
+#[cfg(all(feature = "std", not(any(verus_verify_core, verus_keep_ghost))))]
+#[verifier::external_body]
+#[vcheck]
+pub fn vcheck_ptr_eq(v1: u32, v2: u32) -> (ret: bool)
+    ensures
+        ret,
+{
+    let p1 = Box::into_raw(Box::new(v1));
+    let p2 = Box::into_raw(Box::new(v2));
+    let ok = (p1 == p1) && !(p1 == p2)
+        && ((p1 as *const u32) == (p1 as *const u32))
+        && !((p1 as *const u32) == (p2 as *const u32))
+        && ((p1 == p2) == (p1.addr() == p2.addr()));
+    unsafe {
+        drop(Box::from_raw(p1));
+        drop(Box::from_raw(p2));
+    }
+    ok
+}
+
+/// `addr` / `with_addr`: the constructed pointer carries exactly the given address
+#[cfg(all(feature = "std", not(any(verus_verify_core, verus_keep_ghost))))]
+#[verifier::external_body]
+#[vcheck]
+pub fn vcheck_ptr_addr_with_addr(v: u32, a: u16) -> (ret: bool)
+    ensures
+        ret,
+{
+    let p = Box::into_raw(Box::new(v));
+    let q = p.with_addr(a as usize);
+    let r = p.with_addr(p.addr());
+    let ok = q.addr() == a as usize && r.addr() == p.addr() && unsafe { *r } == v
+        && (p as *const u32).with_addr(a as usize).addr() == a as usize;
+    unsafe {
+        drop(Box::from_raw(p));
+    }
+    ok
+}
+
+/// The cast family
+#[cfg(all(feature = "std", not(any(verus_verify_core, verus_keep_ghost))))]
+#[verifier::external_body]
+#[vcheck]
+pub fn vcheck_ptr_casts(a: u32, b: u32, c: u32, d: u32) -> (ret: bool)
+    ensures
+        ret,
+{
+    let arr: *mut [u32; 4] = Box::into_raw(Box::new([a, b, c, d]));
+    let thin: *mut u32 = cast_ptr_to_thin_ptr(arr);
+    let slice_p: *mut [u32] = cast_array_ptr_to_slice_ptr(arr);
+    let bytes: *mut [u8] = cast_slice_ptr_to_slice_ptr::<u32, u8>(slice_p);
+    let sp: *mut str = cast_slice_ptr_to_str_ptr::<u8>(bytes);
+    let back: *mut [u8] = cast_str_ptr_to_slice_ptr::<u8>(sp);
+    let ok = thin.addr() == arr.addr() && unsafe { *thin } == a
+        && slice_p.addr() == arr.addr() && core::ptr::metadata(slice_p) == 4
+        && bytes.addr() == arr.addr() && core::ptr::metadata(bytes) == 4
+        && sp.addr() == arr.addr() && core::ptr::metadata(sp) == 4
+        && back.addr() == arr.addr() && core::ptr::metadata(back) == 4
+        && cast_ptr_to_usize(thin) == thin.addr();
+    unsafe {
+        drop(Box::from_raw(arr));
+    }
+    ok
+}
+
+/// `expose_provenance` + `with_exposed_provenance` round-trip
+#[cfg(all(feature = "std", not(any(verus_verify_core, verus_keep_ghost))))]
+#[verifier::external_body]
+#[vcheck]
+pub fn vcheck_expose_provenance_roundtrip(v: u32) -> (ret: bool)
+    ensures
+        ret,
+{
+    let p = Box::into_raw(Box::new(v));
+    let exp: Tracked<IsExposed> = expose_provenance(p);
+    let q: *mut u32 = with_exposed_provenance(p.addr(), exp);
+    let ok = q.addr() == p.addr() && unsafe { *q } == v;
+    unsafe {
+        drop(Box::from_raw(p));
+    }
+    ok
+}
+
+/// `allocate` / `deallocate`: the returned pointer is non-null, aligned, in-range
+#[cfg(all(feature = "std", not(any(verus_verify_core, verus_keep_ghost))))]
+#[verifier::external_body]
+#[vcheck]
+pub fn vcheck_allocate_deallocate(sz: u8, al: u8, v: u8) -> (ret: bool)
+    ensures
+        ret,
+{
+    let size = (sz as usize % 64) + 1;
+    let align = 1usize << (al % 4);
+    let (p, pt, dl) = allocate(size, align);
+    let ok = p.addr() != 0 && p.addr() % align == 0
+        && p.addr().checked_add(size - 1).is_some()
+        && unsafe {
+            core::ptr::write(p, v);
+            core::ptr::read(p) == v
+        };
+    deallocate(p, size, align, pt, dl);
+    ok
+}
+
+/// `SharedReference` model fns (`new`, `as_ref`, `as_ptr`, `clone`) and `ptr_ref2`
+#[cfg(all(feature = "std", not(any(verus_verify_core, verus_keep_ghost))))]
+#[verifier::external_body]
+#[vcheck]
+pub fn vcheck_shared_reference(v: u32) -> (ret: bool)
+    ensures
+        ret,
+{
+    let s = SharedReference::new(&v);
+    let c = s.clone();
+    let ok1 = *s.as_ref() == v && *c.as_ref() == v && s.as_ptr().addr() == c.as_ptr().addr();
+    let p = Box::into_raw(Box::new(v));
+    let s2 = ptr_ref2::<u32>(p, Tracked::assume_new());
+    let ok2 = *s2.as_ref() == v && s2.as_ptr().addr() == p.addr();
+    unsafe {
+        drop(Box::from_raw(p));
+    }
+    ok1 && ok2
+}
+
+/// The `PointsTo` reality axioms
+#[cfg(all(feature = "std", not(any(verus_verify_core, verus_keep_ghost))))]
+#[verifier::external_body]
+#[vcheck]
+pub fn vcheck_alloc_nonnull_aligned_disjoint(v1: u32, v2: u32) -> (ret: bool)
+    ensures
+        ret,
+{
+    let p1 = Box::into_raw(Box::new(v1));
+    let p2 = Box::into_raw(Box::new(v2));
+    let (a1, a2) = (p1.addr(), p2.addr());
+    let al = core::mem::align_of::<u32>();
+    let sz = core::mem::size_of::<u32>();
+    let ok = a1 != 0 && a2 != 0 && a1 % al == 0 && a2 % al == 0
+        && (a1 + sz <= a2 || a2 + sz <= a1);
+    unsafe {
+        drop(Box::from_raw(p1));
+        drop(Box::from_raw(p2));
+    }
+    ok
+}
+
+/// `ptr_mut_ref`: mutable reference through a `&mut` permission, observed by value
+#[cfg(not(any(verus_verify_core, verus_keep_ghost)))]
+#[verifier::external_body]
+#[vcheck]
+pub fn vcheck_ptr_mut_ref_u32(
+    ptr: *mut u32,
+    Tracked(perm): Tracked<&mut PointsTo<u32>>,
+) -> (v: u32)
+    requires
+        old(perm).ptr() == ptr,
+        old(perm).is_init(),
+    ensures
+        final(perm).is_init(),
+        v == old(perm).value(),
+        final(perm).value() == old(perm).value(),
+{
+    *ptr_mut_ref(ptr, Tracked(perm))
 }
 
 } // verus!

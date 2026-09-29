@@ -8,9 +8,13 @@
 //! about the behavior of `BTreeMap` and `BTreeSet` into the ambient
 //! reasoning context by broadcasting the group
 //! `vstd::std_specs::btree::group_btree_axioms`.
+// laws_cmp / cmp / iter spec machinery stays ghost-gated
+#[cfg(verus_keep_ghost)]
 use super::super::laws_cmp::obeys_cmp;
 use super::super::prelude::*;
+#[cfg(verus_keep_ghost)]
 use super::cmp::OrdSpec;
+#[cfg(verus_keep_ghost)]
 use super::iter::IteratorSpec;
 
 #[cfg(verus_keep_ghost)]
@@ -73,6 +77,7 @@ pub struct ExKeys<'a, Key, Value>(Keys<'a, Key, Value>);
 // a prophecy, we need a function that gives us the underlying sequence of the original keys.
 pub uninterp spec fn into_iter_keys<'a, Key, Value>(i: Keys<'a, Key, Value>) -> Seq<Key>;
 
+#[cfg(verus_keep_ghost)]
 impl<'a, K, V> super::iter::IteratorSpecImpl for Keys<'a, K, V> {
     open spec fn obeys_prophetic_iter_laws(&self) -> bool {
         true
@@ -105,6 +110,7 @@ pub struct ExValues<'a, Key, Value>(Values<'a, Key, Value>);
 // a prophecy, we need a function that gives us the underlying sequence of the original values.
 pub uninterp spec fn into_iter_values<'a, Key, Value>(i: Values<'a, Key, Value>) -> Seq<Value>;
 
+#[cfg(verus_keep_ghost)]
 impl<'a, K, V> super::iter::IteratorSpecImpl for Values<'a, K, V> {
     open spec fn obeys_prophetic_iter_laws(&self) -> bool {
         true
@@ -139,6 +145,7 @@ pub uninterp spec fn into_iter<'a, Key, Value>(i: btree_map::Iter<'a, Key, Value
     (Key, Value),
 >;
 
+#[cfg(verus_keep_ghost)]
 impl<'a, K, V> super::iter::IteratorSpecImpl for btree_map::Iter<'a, K, V> {
     open spec fn obeys_prophetic_iter_laws(&self) -> bool {
         true
@@ -484,6 +491,146 @@ pub assume_specification<Key, Value, A: Allocator + Clone>[ BTreeMap::<Key, Valu
         len == spec_btree_map_len(m),
 ;
 
+// vcheck wrappers for the guarded mutator specs
+
+#[cfg(not(any(verus_verify_core, verus_keep_ghost)))]
+#[verifier::external_body]
+#[vcheck]
+pub fn vcheck_btree_map_insert(m: &mut BTreeMap<u32, u32>, k: u32, v: u32) -> (result: Option<u32>)
+    ensures
+        final(m)@ == old(m)@.insert(k, v),
+        result == (if old(m)@.contains_key(k) {
+            Some(old(m)@[k])
+        } else {
+            None::<u32>
+        }),
+{
+    BTreeMap::<u32, u32>::insert(m, k, v)
+}
+
+#[cfg(not(any(verus_verify_core, verus_keep_ghost)))]
+#[verifier::external_body]
+#[vcheck]
+pub fn vcheck_btree_map_remove(m: &mut BTreeMap<u32, u32>, k: u32) -> (result: Option<u32>)
+    ensures
+        final(m)@ == old(m)@.remove(k),
+        result == (if old(m)@.contains_key(k) {
+            Some(old(m)@[k])
+        } else {
+            None::<u32>
+        }),
+{
+    BTreeMap::<u32, u32>::remove(m, &k)
+}
+
+#[cfg(not(any(verus_verify_core, verus_keep_ghost)))]
+#[verifier::external_body]
+#[vcheck]
+pub fn vcheck_btree_map_get(m: BTreeMap<u32, u32>, k: u32) -> (result: Option<u32>)
+    ensures
+        result == (if m@.contains_key(k) {
+            Some(m@[k])
+        } else {
+            None::<u32>
+        }),
+{
+    BTreeMap::<u32, u32>::get(&m, &k).copied()
+}
+
+#[cfg(not(any(verus_verify_core, verus_keep_ghost)))]
+#[verifier::external_body]
+#[vcheck]
+pub fn vcheck_btree_map_contains_key(m: BTreeMap<u32, u32>, k: u32) -> (result: bool)
+    ensures
+        result == m@.contains_key(k),
+{
+    BTreeMap::<u32, u32>::contains_key(&m, &k)
+}
+
+#[cfg(not(any(verus_verify_core, verus_keep_ghost)))]
+#[verifier::external_body]
+#[vcheck]
+pub fn vcheck_btree_set_insert(m: &mut BTreeSet<u32>, k: u32) -> (result: bool)
+    ensures
+        final(m)@ == old(m)@.insert(k),
+        result == !old(m)@.contains(k),
+{
+    BTreeSet::<u32>::insert(m, k)
+}
+
+#[cfg(not(any(verus_verify_core, verus_keep_ghost)))]
+#[verifier::external_body]
+#[vcheck]
+pub fn vcheck_btree_set_remove(m: &mut BTreeSet<u32>, k: u32) -> (result: bool)
+    ensures
+        final(m)@ == old(m)@.remove(k),
+        result == old(m)@.contains(k),
+{
+    BTreeSet::<u32>::remove(m, &k)
+}
+
+/// Box-keyed mutator composite (`Key = Box<u32>`, `Q = u32`)
+#[cfg(not(any(verus_verify_core, verus_keep_ghost)))]
+#[verifier::external_body]
+#[vcheck]
+pub fn vcheck_btree_box_key_ops(model: BTreeMap<u32, u32>, k: u32, v: u32) -> (ret: bool)
+    ensures
+        ret,
+{
+    let mut m: BTreeMap<Box<u32>, u32> = model.iter().map(|(k, v)| (Box::new(*k), *v)).collect();
+    let mut s: BTreeSet<Box<u32>> = model.keys().map(|k| Box::new(*k)).collect();
+    let mut expected: BTreeMap<u32, u32> = model.clone();
+
+    m.insert(Box::new(k), v);
+    s.insert(Box::new(k));
+    expected.insert(k, v);
+    let after_insert = m.len() == expected.len()
+        && expected.iter().all(|(ek, ev)| m.get(ek) == Some(ev))
+        && expected.keys().all(|ek| s.contains(ek));
+    let got = m.get(&k) == Some(&v) && m.contains_key(&k) && s.contains(&k)
+        && s.get(&k).map(|b| **b) == Some(k);
+    let removed = m.remove(&k) == Some(v) && s.remove(&k);
+    expected.remove(&k);
+    let after_remove = !m.contains_key(&k) && !s.contains(&k)
+        && m.len() == expected.len()
+        && expected.iter().all(|(ek, ev)| m.get(ek) == Some(ev));
+
+    after_insert && got && removed && after_remove
+}
+
+/// `BTreeSet::get` at `Key = Q = u32` (the set's own element equals the probe)
+#[cfg(not(any(verus_verify_core, verus_keep_ghost)))]
+#[verifier::external_body]
+#[vcheck]
+pub fn vcheck_btree_set_get(m: BTreeSet<u32>, k: u32) -> (ret: bool)
+    ensures
+        ret,
+{
+    m.get(&k).copied() == (if m.contains(&k) { Some(k) } else { None })
+}
+
+#[cfg(not(any(verus_verify_core, verus_keep_ghost)))]
+#[verifier::external_body]
+#[vcheck]
+pub fn vcheck_btree_set_contains(m: BTreeSet<u32>, k: u32) -> (result: bool)
+    ensures
+        result == m@.contains(k),
+{
+    BTreeSet::<u32>::contains(&m, &k)
+}
+
+// vcheck wrapper: `spec_btree_map_len` is uninterp
+#[cfg(not(any(verus_verify_core, verus_keep_ghost)))]
+#[verifier::external_body]
+#[vcheck]
+pub fn vcheck_btree_map_len(m: BTreeMap<u32, u32>) -> (len: usize)
+    ensures
+        len == m@.len(),
+{
+    BTreeMap::<u32, u32>::len(&m)
+}
+
+#[vcheck(Key = u32, Value = u32, A = alloc::alloc::Global)]
 pub assume_specification<Key, Value, A: Allocator + Clone>[ BTreeMap::<Key, Value, A>::is_empty ](
     m: &BTreeMap<Key, Value, A>,
 ) -> (res: bool)
@@ -491,6 +638,7 @@ pub assume_specification<Key, Value, A: Allocator + Clone>[ BTreeMap::<Key, Valu
         res == m@.is_empty(),
 ;
 
+#[vcheck(K = u32, V = u32, A = alloc::alloc::Global)]
 pub assume_specification<K: Clone, V: Clone, A: Allocator + Clone>[ <BTreeMap::<
     K,
     V,
@@ -500,11 +648,13 @@ pub assume_specification<K: Clone, V: Clone, A: Allocator + Clone>[ <BTreeMap::<
         other@ == this@,
 ;
 
+#[vcheck(Key = u32, Value = u32)]
 pub assume_specification<Key, Value>[ BTreeMap::<Key, Value>::new ]() -> (m: BTreeMap<Key, Value>)
     ensures
         m@ == Map::<Key, Value>::empty(),
 ;
 
+#[vcheck(K = u32, V = u32)]
 pub assume_specification<K, V>[ <BTreeMap<K, V> as core::default::Default>::default ]() -> (m:
     BTreeMap<K, V>)
     ensures
@@ -763,6 +913,7 @@ pub assume_specification<
         },
 ;
 
+#[vcheck(Key = u32, Value = u32, A = alloc::alloc::Global)]
 pub assume_specification<Key, Value, A: Allocator + Clone>[ BTreeMap::<Key, Value, A>::clear ](
     m: &mut BTreeMap<Key, Value, A>,
 )
@@ -1034,6 +1185,7 @@ pub struct ExSetIter<'a, K: 'a>(btree_set::Iter<'a, K>);
 // a prophecy, we need a function that gives us the underlying sequence of the original keys.
 pub uninterp spec fn into_iter_btree_keys<'a, Key>(i: btree_set::Iter::<'a, Key>) -> Seq<Key>;
 
+#[cfg(verus_keep_ghost)]
 impl<'a, T> super::iter::IteratorSpecImpl for btree_set::Iter::<'a, T> {
     open spec fn obeys_prophetic_iter_laws(&self) -> bool {
         true
@@ -1097,6 +1249,18 @@ pub assume_specification<Key, A: Allocator + Clone>[ BTreeSet::<Key, A>::len ](
         len == spec_btree_set_len(m),
 ;
 
+// vcheck wrapper composing the uninterp-spec'd len assume_spec above
+#[cfg(not(any(verus_verify_core, verus_keep_ghost)))]
+#[verifier::external_body]
+#[vcheck]
+pub fn vcheck_btree_set_len(m: BTreeSet<u32>) -> (len: usize)
+    ensures
+        len == m@.len(),
+{
+    BTreeSet::<u32>::len(&m)
+}
+
+#[vcheck(Key = u32, A = alloc::alloc::Global)]
 pub assume_specification<Key, A: Allocator + Clone>[ BTreeSet::<Key, A>::is_empty ](
     m: &BTreeSet<Key, A>,
 ) -> (res: bool)
@@ -1104,6 +1268,7 @@ pub assume_specification<Key, A: Allocator + Clone>[ BTreeSet::<Key, A>::is_empt
         res == m@.is_empty(),
 ;
 
+#[vcheck(K = u32, A = alloc::alloc::Global)]
 pub assume_specification<K: Clone, A: Allocator + Clone>[ <BTreeSet::<K, A> as Clone>::clone ](
     this: &BTreeSet<K, A>,
 ) -> (other: BTreeSet<K, A>)
@@ -1111,11 +1276,13 @@ pub assume_specification<K: Clone, A: Allocator + Clone>[ <BTreeSet::<K, A> as C
         other@ == this@,
 ;
 
+#[vcheck(Key = u32)]
 pub assume_specification<Key>[ BTreeSet::<Key>::new ]() -> (m: BTreeSet<Key>)
     ensures
         m@ == Set::<Key>::empty(),
 ;
 
+#[vcheck(T = u32)]
 pub assume_specification<T>[ <BTreeSet<T> as core::default::Default>::default ]() -> (m: BTreeSet<
     T,
 >)
@@ -1255,6 +1422,7 @@ pub assume_specification<Key: Borrow<Q> + Ord, A: Allocator + Clone, Q: Ord + ?S
         },
 ;
 
+#[vcheck(Key = u32, A = alloc::alloc::Global)]
 pub assume_specification<Key, A: Allocator + Clone>[ BTreeSet::<Key, A>::clear ](
     m: &mut BTreeSet<Key, A>,
 ) where A: Clone
@@ -1305,6 +1473,291 @@ pub broadcast group group_btree_axioms {
     axiom_deref_key_cmp,
     axiom_has_resolved_cursor,
     lemma_borrowed_key_mutated_deref,
+}
+
+} // verus!
+
+verus! {
+
+// vcheck oracles for the BTreeMap cursor specs
+#[cfg(not(any(verus_verify_core, verus_keep_ghost)))]
+#[verifier::external_body]
+fn vcheck_cursor_probe(keys: &[u32], raw: u32, sel: u8) -> u32 {
+    if keys.is_empty() || sel % 2 == 0 {
+        raw
+    } else {
+        keys[(raw as usize) % keys.len()]
+    }
+}
+
+/// spec gap index: number of keys before the bound
+#[cfg(not(any(verus_verify_core, verus_keep_ghost)))]
+#[verifier::external_body]
+fn vcheck_cursor_gap(keys: &[u32], kind: u8, b: u32, lower: bool) -> usize {
+    keys.iter().filter(
+        |k|
+            match (kind % 3, lower) {
+                (0, true) => **k < b,
+                (1, true) => **k <= b,
+                (2, true) => false,
+                (0, false) => **k <= b,
+                (1, false) => **k < b,
+                _ => true,
+            },
+    ).count()
+}
+
+#[cfg(not(any(verus_verify_core, verus_keep_ghost)))]
+#[verifier::external_body]
+fn vcheck_cursor_bound<'b>(kind: u8, b: &'b u32) -> Bound<&'b u32> {
+    match kind % 3 {
+        0 => Bound::Included(b),
+        1 => Bound::Excluded(b),
+        _ => Bound::Unbounded,
+    }
+}
+
+#[cfg(not(any(verus_verify_core, verus_keep_ghost)))]
+#[verifier::external_body]
+fn vcheck_cursor_at(keys: &[u32], p: usize, prev: Option<u32>, next: Option<u32>) -> bool {
+    prev == (if p == 0 {
+        None
+    } else {
+        Some(keys[p - 1])
+    }) && next == keys.get(p).copied()
+}
+
+/// `lower_bound_mut` / `upper_bound_mut` land on the spec gap and leave the map unchanged
+#[cfg(not(any(verus_verify_core, verus_keep_ghost)))]
+#[verifier::external_body]
+#[vcheck]
+pub fn vcheck_btree_cursor_bounds(m: BTreeMap<u32, u32>, raw: u32, sel: u8, kind: u8, upper: bool) -> (ret: bool)
+    ensures
+        ret,
+{
+    let keys: Vec<u32> = m.keys().copied().collect();
+    let b = vcheck_cursor_probe(&keys, raw, sel);
+    let p = vcheck_cursor_gap(&keys, kind, b, !upper);
+    let mut m2 = m.clone();
+    let at = {
+        let mut c = if upper {
+            m2.upper_bound_mut(vcheck_cursor_bound(kind, &b))
+        } else {
+            m2.lower_bound_mut(vcheck_cursor_bound(kind, &b))
+        };
+        let prev = c.peek_prev().map(|(k, _)| *k);
+        let next = c.peek_next().map(|(k, _)| *k);
+        vcheck_cursor_at(&keys, p, prev, next)
+    };
+    at && m2 == m
+}
+
+/// `next` / `prev` move over one element, and writes through the value reach the map
+#[cfg(not(any(verus_verify_core, verus_keep_ghost)))]
+#[verifier::external_body]
+#[vcheck]
+pub fn vcheck_btree_cursor_step(m: BTreeMap<u32, u32>, raw: u32, sel: u8, kind: u8, back: bool, w: u32) -> (ret: bool)
+    ensures
+        ret,
+{
+    let keys: Vec<u32> = m.keys().copied().collect();
+    let b = vcheck_cursor_probe(&keys, raw, sel);
+    let p = vcheck_cursor_gap(&keys, kind, b, true);
+    let mut m2 = m.clone();
+    let (got, prev, next) = {
+        let mut c = m2.lower_bound_mut(vcheck_cursor_bound(kind, &b));
+        let r = if back {
+            c.prev()
+        } else {
+            c.next()
+        };
+        let got = match r {
+            Some((k, v)) => {
+                let out = Some((*k, *v));
+                *v = w;
+                out
+            },
+            None => None,
+        };
+        let prev = c.peek_prev().map(|(k, _)| *k);
+        let next = c.peek_next().map(|(k, _)| *k);
+        (got, prev, next)
+    };
+    match got {
+        Some((k, v)) => {
+            let idx = if back {
+                p.wrapping_sub(1)
+            } else {
+                p
+            };
+            let q = if back {
+                p - 1
+            } else {
+                p + 1
+            };
+            let mut e = m.clone();
+            e.insert(k, w);
+            idx < keys.len() && k == keys[idx] && v == m[&k] && vcheck_cursor_at(&keys, q, prev, next) && m2 == e
+        },
+        None => (if back {
+            p == 0
+        } else {
+            p == keys.len()
+        }) && vcheck_cursor_at(&keys, p, prev, next) && m2 == m,
+    }
+}
+
+/// `peek_next` / `peek_prev` expose the adjacent element without moving
+#[cfg(not(any(verus_verify_core, verus_keep_ghost)))]
+#[verifier::external_body]
+#[vcheck]
+pub fn vcheck_btree_cursor_peek(m: BTreeMap<u32, u32>, raw: u32, sel: u8, kind: u8, back: bool, w: u32) -> (ret: bool)
+    ensures
+        ret,
+{
+    let keys: Vec<u32> = m.keys().copied().collect();
+    let b = vcheck_cursor_probe(&keys, raw, sel);
+    let p = vcheck_cursor_gap(&keys, kind, b, true);
+    let mut m2 = m.clone();
+    let (got, prev, next) = {
+        let mut c = m2.lower_bound_mut(vcheck_cursor_bound(kind, &b));
+        let r = if back {
+            c.peek_prev()
+        } else {
+            c.peek_next()
+        };
+        let got = match r {
+            Some((k, v)) => {
+                let out = Some((*k, *v));
+                *v = w;
+                out
+            },
+            None => None,
+        };
+        let prev = c.peek_prev().map(|(k, _)| *k);
+        let next = c.peek_next().map(|(k, _)| *k);
+        (got, prev, next)
+    };
+    let at = vcheck_cursor_at(&keys, p, prev, next);
+    match got {
+        Some((k, v)) => {
+            let idx = if back {
+                p.wrapping_sub(1)
+            } else {
+                p
+            };
+            let mut e = m.clone();
+            e.insert(k, w);
+            idx < keys.len() && k == keys[idx] && v == m[&k] && at && m2 == e
+        },
+        None => (if back {
+            p == 0
+        } else {
+            p == keys.len()
+        }) && at && m2 == m,
+    }
+}
+
+/// `insert_after` succeeds iff the key fits the gap, leaving the cursor before it
+#[cfg(not(any(verus_verify_core, verus_keep_ghost)))]
+#[verifier::external_body]
+#[vcheck]
+pub fn vcheck_btree_cursor_insert_after(m: BTreeMap<u32, u32>, raw: u32, sel: u8, kind: u8, raw2: u32, nv: u32) -> (ret: bool)
+    ensures
+        ret,
+{
+    let keys: Vec<u32> = m.keys().copied().collect();
+    let b = vcheck_cursor_probe(&keys, raw, sel);
+    let p = vcheck_cursor_gap(&keys, kind, b, true);
+    let nk = match (sel / 2) % 4 {
+        0 => raw2,
+        1 if p > 0 => keys[p - 1],
+        2 if p < keys.len() => keys[p],
+        3 if p > 0 => keys[p - 1].wrapping_add(1),
+        _ => raw2,
+    };
+    let fits = (p == 0 || keys[p - 1] < nk) && (p == keys.len() || nk < keys[p]);
+    let mut m2 = m.clone();
+    let (ok, prev, next) = {
+        let mut c = m2.lower_bound_mut(vcheck_cursor_bound(kind, &b));
+        let ok = c.insert_after(nk, nv).is_ok();
+        let prev = c.peek_prev().map(|(k, _)| *k);
+        let next = c.peek_next().map(|(k, v)| (*k, *v));
+        (ok, prev, next)
+    };
+    if ok {
+        let mut e = m.clone();
+        e.insert(nk, nv);
+        fits && m2 == e && next == Some((nk, nv)) && prev == (if p == 0 {
+            None
+        } else {
+            Some(keys[p - 1])
+        })
+    } else {
+        !fits && m2 == m
+    }
+}
+
+/// `remove_next` removes the element after the gap and keeps the position
+#[cfg(not(any(verus_verify_core, verus_keep_ghost)))]
+#[verifier::external_body]
+#[vcheck]
+pub fn vcheck_btree_cursor_remove_next(m: BTreeMap<u32, u32>, raw: u32, sel: u8, kind: u8) -> (ret: bool)
+    ensures
+        ret,
+{
+    let keys: Vec<u32> = m.keys().copied().collect();
+    let b = vcheck_cursor_probe(&keys, raw, sel);
+    let p = vcheck_cursor_gap(&keys, kind, b, true);
+    let mut m2 = m.clone();
+    let (got, prev, next) = {
+        let mut c = m2.lower_bound_mut(vcheck_cursor_bound(kind, &b));
+        let got = c.remove_next();
+        let prev = c.peek_prev().map(|(k, _)| *k);
+        let next = c.peek_next().map(|(k, _)| *k);
+        (got, prev, next)
+    };
+    match got {
+        Some((k, v)) => {
+            let mut e = m.clone();
+            e.remove(&k);
+            let rest: Vec<u32> = e.keys().copied().collect();
+            p < keys.len() && k == keys[p] && v == m[&k] && m2 == e && vcheck_cursor_at(&rest, p, prev, next)
+        },
+        None => p == keys.len() && m2 == m && vcheck_cursor_at(&keys, p, prev, next),
+    }
+}
+
+} // verus!
+
+verus! {
+
+/// BTreeMap `iter` / `keys` / `values` enumerate in strictly increasing key order
+#[cfg(not(any(verus_verify_core, verus_keep_ghost)))]
+#[verifier::external_body]
+#[vcheck]
+pub fn vcheck_btree_map_iters(m: BTreeMap<u32, u32>) -> (ret: bool)
+    ensures
+        ret,
+{
+    let items: Vec<(u32, u32)> = m.iter().map(|(k, v)| (*k, *v)).collect();
+    let keys: Vec<u32> = m.keys().copied().collect();
+    let values: Vec<u32> = m.values().copied().collect();
+    items.len() == m.len() && keys.len() == m.len() && values.len() == m.len() && keys.windows(2).all(
+        |w| w[0] < w[1],
+    ) && (0..keys.len()).all(|i| items[i] == (keys[i], values[i]) && m.get(&keys[i]) == Some(&values[i]))
+}
+
+/// BTreeSet `iter` enumerates each element once in increasing order
+#[cfg(not(any(verus_verify_core, verus_keep_ghost)))]
+#[verifier::external_body]
+#[vcheck]
+pub fn vcheck_btree_set_iter(s: BTreeSet<u32>) -> (ret: bool)
+    ensures
+        ret,
+{
+    let xs: Vec<u32> = s.iter().copied().collect();
+    xs.len() == s.len() && xs.windows(2).all(|w| w[0] < w[1]) && xs.iter().all(|x| s.contains(x))
 }
 
 } // verus!
