@@ -12,6 +12,8 @@ pub use verus_builtin_macros::exec_spec_verified;
 
 mod map;
 pub use map::*;
+mod mem_contents;
+pub use mem_contents::*;
 mod multiset;
 pub use multiset::*;
 mod option;
@@ -203,5 +205,13 @@ impl_exec_spec_tuple!([(T0, 0), (T1, 1)]);
 impl_exec_spec_tuple!([(T0, 0), (T1, 1), (T2, 2)]);
 
 impl_exec_spec_tuple!([(T0, 0), (T1, 1), (T2, 2), (T3, 3)]);
+
+impl<T: DeepViewClone> DeepViewClone for Box<T> {
+    #[verifier::external_body]
+    #[inline(always)]
+    fn deep_clone(&self) -> Self {
+        Box::new((**self).deep_clone())
+    }
+}
 
 } // verus!
