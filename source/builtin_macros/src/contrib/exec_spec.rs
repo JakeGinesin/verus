@@ -177,10 +177,8 @@ fn compile_type(typ: &Type, ctx: TypeKind) -> Result<TokenStream2, Error> {
                         TypeKind::Ref => Ok(quote_spanned! { span => &Option<#param> }),
                     };
                 } else if type_path.path.segments[0].ident.to_string() == "Result" {
-                    // Same shape as Option above. The runtime `Result<T, E>`
-                    // is the exec form for both `Owned` and `Ref` contexts.
-                    // TODO: implement ExecSpecType for Result<T, E> to
-                    // remove this special case.
+                    // TODO: implement ExecSpecType for Result<T, E> so that
+                    // we don't need this special case
                     let t_arg = get_seg_type_arg(&type_path.path.segments[0], 0)?;
                     let e_arg = get_seg_type_arg(&type_path.path.segments[0], 1)?;
                     let t_param = compile_type(t_arg, TypeKind::Owned)?;
@@ -197,6 +195,7 @@ fn compile_type(typ: &Type, ctx: TypeKind) -> Result<TokenStream2, Error> {
                     || type_path.path.segments[0].ident.to_string() == "HashSet"
                     || type_path.path.segments[0].ident.to_string() == "ExecMultiset"
                     || type_path.path.segments[0].ident.to_string() == "String"
+                    || type_path.path.segments[0].ident.to_string() == "str"
                     || type_path.path.segments[0].ident.to_string() == "nat"
                     || type_path.path.segments[0].ident.to_string() == "int"
                     || type_path.path.segments[0].ident.to_string() == "real"
@@ -221,56 +220,6 @@ fn compile_type(typ: &Type, ctx: TypeKind) -> Result<TokenStream2, Error> {
                 TypeKind::Owned => Ok(quote_spanned! { span => (#(#types,)*) }),
                 TypeKind::Ref => Ok(quote_spanned! { span => &(#(#types,)*) }),
             };
-        }
-
-        // `&str` parameters and returns: treat the same as `SpecString` (=
-        // `Seq<char>`) — at runtime they're already the right shape, just
-        // not via the `ExecSpecType` trait. This lets spec fns whose
-        // signatures use `&str` (rather than `SpecString`) compile through
-        // the engine without bouncing off the trait lookup.
-        Type::Reference(type_ref) => {
-            if let Type::Path(tp) = type_ref.elem.as_ref() {
-                if tp.qself.is_none()
-                    && tp.path.segments.len() == 1
-                    && tp.path.segments[0].ident == "str"
-                    && matches!(tp.path.segments[0].arguments, PathArguments::None)
-                {
-                    return match ctx {
-                        TypeKind::Owned => Ok(quote_spanned! { span => String }),
-                        TypeKind::Ref => Ok(quote_spanned! { span => &str }),
-                    };
-                }
-                // `&Option<T>` / `&Result<T, E>` / `&Vec<T>` / `&HashMap<K,V>`
-                // / `&HashSet<T>` / `&Multiset<T>` / `&Map<K,V>` / `&Set<T>`
-                // / `&Seq<T>`: recurse on the inner type as a Ref, return
-                // as-is. Without this, references to spec containers fall
-                // through to the `ExecSpecType` trait-lookup path which
-                // doesn't have an impl for `&Option<T>` / etc., yielding a
-                // confusing diagnostic. The recursive call handles all the
-                // type-arg substitution / specialization for us.
-                if tp.qself.is_none() && tp.path.segments.len() == 1 {
-                    let outer_name = tp.path.segments[0].ident.to_string();
-                    if matches!(
-                        outer_name.as_str(),
-                        "Option"
-                            | "Result"
-                            | "Vec"
-                            | "HashMap"
-                            | "HashSet"
-                            | "Multiset"
-                            | "Map"
-                            | "Set"
-                            | "Seq"
-                            | "MemContents"
-                    ) {
-                        // Compile the inner as a Ref (so it becomes
-                        // `&Option<...>` / `&Result<...>` / etc.).
-                        return compile_type(type_ref.elem.as_ref(), TypeKind::Ref);
-                    }
-                }
-            }
-            // Other reference types fall through to the ExecSpecType
-            // trait-lookup path, which will error if not implemented.
         }
 
         _ => {}
@@ -777,6 +726,74 @@ fn compile_enum(item_enum: &ItemEnum) -> Result<TokenStream2, Error> {
         })
         .collect::<Vec<_>>();
 
+    let mut arrow_fields: Vec<(&Ident, String, TokenStream2, &verus_syn::Field)> = Vec::new();
+    for variant in &item_enum.variants {
+        let variant_name = &variant.ident;
+        match &variant.fields {
+            Fields::Named(fields_named) => {
+                for field in &fields_named.named {
+                    let field_name = field.ident.as_ref().unwrap();
+                    let pat = quote! { #exec_name::#variant_name { #field_name: __v, .. } };
+                    arrow_fields.push((variant_name, field_name.to_string(), pat, field));
+                }
+            }
+            Fields::Unnamed(fields_unnamed) => {
+                for (i, field) in fields_unnamed.unnamed.iter().enumerate() {
+                    let wild = (0..i).map(|_| quote! { _ });
+                    let pat = quote! { #exec_name::#variant_name(#(#wild,)* __v, ..) };
+                    arrow_fields.push((variant_name, i.to_string(), pat, field));
+                }
+            }
+            Fields::Unit => {}
+        }
+    }
+
+    let arrow_method = |member: String,
+                        field: &verus_syn::Field,
+                        cases: Vec<(&Ident, &TokenStream2)>|
+     -> Result<TokenStream2, Error> {
+        let method_name = Ident::new(&format!("exec_arrow_{}", member), field.span());
+        let spec_method = Ident::new(&format!("arrow_{}", member), field.span());
+        let typ = compile_type(&field.ty, TypeKind::Owned)?;
+        let variant_names = cases.iter().map(|(v, _)| *v);
+        let pats = cases.iter().map(|(_, p)| *p);
+        let span = field.span();
+        Ok(quote_spanned! { span =>
+            #[allow(unreachable_patterns)]
+            #[allow(non_snake_case)]
+            #vis fn #method_name(&self) -> (res: &#typ)
+                requires #(matches!(self.deep_view(), #spec_name::#variant_names { .. }))||*
+                ensures res.deep_view() == self.deep_view().#spec_method()
+            {
+                match self {
+                    #(#pats)|* => __v,
+                    _ => vstd::pervasive::unreached(),
+                }
+            }
+        })
+    };
+
+    let mut arrow_methods = Vec::new();
+    for (variant_name, member, pat, field) in &arrow_fields {
+        arrow_methods.push(arrow_method(
+            format!("{}_{}", variant_name, member),
+            field,
+            vec![(*variant_name, pat)],
+        )?);
+    }
+    let mut direct_members: Vec<&String> = Vec::new();
+    for (_, member, _, _) in &arrow_fields {
+        if !direct_members.contains(&member) {
+            direct_members.push(member);
+        }
+    }
+    for member in direct_members {
+        let cases: Vec<_> = arrow_fields.iter().filter(|(_, m, _, _)| m == member).collect();
+        if let [(variant_name, _, pat, field)] = cases[..] {
+            arrow_methods.push(arrow_method(member.clone(), field, vec![(*variant_name, pat)])?);
+        }
+    }
+
     let span = item_enum.vis.span();
     let open_or_close = if let Visibility::Public(..) = item_enum.vis {
         quote_spanned! { span => open }
@@ -844,6 +861,7 @@ fn compile_enum(item_enum: &ItemEnum) -> Result<TokenStream2, Error> {
 
         impl #exec_name {
             #(#is_variant_methods)*
+            #(#arrow_methods)*
         }
     })
 }
@@ -904,12 +922,7 @@ fn compile_sig(
                     "`&mut self` is not supported in exec_spec impl methods",
                 ));
             }
-            if receiver.colon_token.is_some() {
-                return Err(Error::new_spanned(
-                    receiver,
-                    "explicitly typed `self` is not supported in exec_spec impl methods",
-                ));
-            }
+
             has_receiver = true;
             let exec_spec = Ident::new(&format!("Exec{}", self_ty_ident), self_ty_ident.span());
             ctx.add(Ident::new("self", receiver.self_token.span), VarMode::Ref);
@@ -2427,10 +2440,7 @@ fn compile_expr(
                 quote! { vstd::contrib::exec_spec::ExecSpecEq::exec_eq(#left, #right) }
             }
 
-            // Spec-level equality forms that compare structural views.
-            // For runtime vcheck all of them collapse to `==`/`!=` on the
-            // underlying owned values, which agrees with the spec on
-            // primitive-backed shapes (Seq<u8>, etc.).
+            // Spec-level equality forms, lowered to `exec_eq`
             //
             //   `===`   BigEq      -- non-extensional spec eq
             //   `=~=`   ExtEq      -- extensional eq (e.g. slice deep view)
@@ -2612,37 +2622,10 @@ fn compile_expr(
                 return Err(Error::new_spanned(expr_call, "unsupported callee"));
             };
 
-            // Special-case verus's arithmetic builtins (`add(a, b)`,
-            // `sub(a, b)`, `mul(a, b)`) which appear in bit-vector specs
-            // (e.g. `i << sub(8, t) == 0`). They have no exec companion;
-            // lower to wrapping-arithmetic equivalents which agree on
-            // values in range.
-            if fn_path.path.segments.len() == 1 && expr_call.args.len() == 2 {
-                let name = fn_path.path.segments[0].ident.to_string();
-                let op_tokens: Option<TokenStream2> = match name.as_str() {
-                    "add" => Some(quote! { wrapping_add }),
-                    "sub" => Some(quote! { wrapping_sub }),
-                    "mul" => Some(quote! { wrapping_mul }),
-                    _ => None,
-                };
-                if let Some(op) = op_tokens {
-                    let lhs = expr_call.args.iter().next().unwrap();
-                    let rhs = expr_call.args.iter().nth(1).unwrap();
-                    let l = compile_expr(ctx, lhs, VarMode::Owned, unverified)?;
-                    let r = compile_expr(ctx, rhs, VarMode::Owned, unverified)?;
-                    let owned = quote! { (#l).#op(#r) };
-                    let result = match mode {
-                        VarMode::Ref => quote! { #owned.get_ref() },
-                        VarMode::Owned => owned,
-                    };
-                    return Ok(result);
-                }
-            }
-
             // Special-case verus's `is_variant(<x>, "Variant")` builtin.
             // It has no exec companion, so the default rename to
-            // `exec_is_variant` produces an unresolved-fn error. Lower to
-            // a `matches!` expression on the receiver.
+            // `exec_is_variant` produces an unresolved-fn error. Lower it
+            // the same way as `x is Variant`.
             if fn_path.path.segments.len() == 1
                 && fn_path.path.segments[0].ident == "is_variant"
                 && expr_call.args.len() == 2
@@ -2662,15 +2645,15 @@ fn compile_expr(
                     // Compile the receiver as a Ref (it's typically
                     // `&Option<T>` etc. in spec form).
                     let recv = compile_expr(ctx, recv_expr, VarMode::Ref, unverified)?;
-                    let vid: Ident = format_ident!("{}", vname);
                     let owned = match vname.as_str() {
                         "Some" => quote! { ::core::matches!(#recv, Some(_)) },
                         "None" => quote! { ::core::matches!(#recv, None) },
                         "Ok" => quote! { ::core::matches!(#recv, Ok(_)) },
                         "Err" => quote! { ::core::matches!(#recv, Err(_)) },
-                        _ => quote! {
-                            ::core::matches!(#recv, #vid { .. } | #vid(..) | #vid)
-                        },
+                        _ => {
+                            let method = format_ident!("exec_is_{}", vname);
+                            quote! { #recv.#method() }
+                        }
                     };
                     let result = match mode {
                         VarMode::Ref => quote! { #owned.get_ref() },
@@ -3379,70 +3362,17 @@ fn compile_expr(
         // Expr::Has(expr_has) => todo!(),
         // Expr::HasNot(expr_has_not) => todo!(),
 
-        // `expr->Variant_<n>` / `expr->Variant`: verus's variant-field
-        // accessor. Lower to a `match` for known std enums (Option /
-        // Result); fall back to `<vid>(__v) => __v` for generic enums.
+        // `expr->member`: dispatched to `exec_arrow_<member>`
         Expr::GetField(verus_syn::ExprGetField { base, member, .. }) => {
-            let base_compiled = compile_expr(ctx, base, VarMode::Owned, unverified)?;
+            let base_compiled = compile_expr(ctx, base, VarMode::Ref, unverified)?;
             let member_str = match member {
                 verus_syn::Member::Named(id) => id.to_string(),
                 verus_syn::Member::Unnamed(idx) => idx.index.to_string(),
             };
-            // For "0" / "1" without a variant name prefix, the variant is
-            // ambiguous from this layer alone — the receiver type tells us.
-            // We don't have type info here, so we use a generic `match` arm
-            // that accepts ANY single-field tuple variant. For Option /
-            // Result with `Some_0` / `Ok_0` / `Err_0`, the variant is known.
-            let vname: String = if let Some(under) = member_str.rfind('_') {
-                let (left, right) = member_str.split_at(under);
-                let right = &right[1..];
-                if right.parse::<usize>().is_ok() && !left.is_empty() {
-                    left.to_string()
-                } else {
-                    member_str.clone()
-                }
-            } else {
-                member_str.clone()
-            };
-            let owned = match vname.as_str() {
-                "Some" => quote_spanned! { member.span() =>
-                    match (#base_compiled).clone() { Some(__v) => __v, _ => unreachable!() }
-                },
-                "Ok" => quote_spanned! { member.span() =>
-                    match (#base_compiled).clone() { Ok(__v) => __v, _ => unreachable!() }
-                },
-                "Err" => quote_spanned! { member.span() =>
-                    match (#base_compiled).clone() { Err(__v) => __v, _ => unreachable!() }
-                },
-                _ => {
-                    // Pure-numeric (e.g. "0", "1"): assume it's the n-th
-                    // tuple field of whatever variant the type is. Fall
-                    // through to a runtime panic (the contract should have
-                    // a `is Some` / `is Ok` requires that prevents this
-                    // arm from firing).
-                    if vname.parse::<usize>().is_ok() {
-                        // Common cases: Option's only variant with fields
-                        // is Some(_); Result has Ok / Err. Try Some first.
-                        quote_spanned! { member.span() =>
-                            match (#base_compiled).clone() {
-                                Some(__v) => __v,
-                                _ => unreachable!(),
-                            }
-                        }
-                    } else {
-                        let vid = Ident::new(&vname, member.span());
-                        quote_spanned! { member.span() =>
-                            match (#base_compiled).clone() {
-                                #vid(__v) => __v,
-                                _ => unreachable!(),
-                            }
-                        }
-                    }
-                }
-            };
+            let method = Ident::new(&format!("exec_arrow_{}", member_str), member.span());
             match mode {
-                VarMode::Ref => quote! { (#owned).get_ref() },
-                VarMode::Owned => owned,
+                VarMode::Ref => quote! { #base_compiled.#method().get_ref() },
+                VarMode::Owned => quote! { #base_compiled.#method().get_ref().get_owned() },
             }
         }
 
@@ -3712,6 +3642,28 @@ fn compile_item(item: Item, unverified: bool) -> Result<TokenStream2, Error> {
         Item::Enum(item_enum) => compile_enum(&item_enum),
         Item::Impl(item_impl) => compile_impl(&item_impl, unverified),
         _ => Err(Error::new_spanned(item, "unsupported item")),
+    }
+}
+
+struct ExecSpecTypeInput {
+    is_ref: bool,
+    typ: Type,
+}
+
+impl Parse for ExecSpecTypeInput {
+    fn parse(input: ParseStream) -> verus_syn::parse::Result<ExecSpecTypeInput> {
+        let is_ref = input.parse::<Option<verus_syn::Token![ref]>>()?.is_some();
+        let typ = input.parse()?;
+        Ok(ExecSpecTypeInput { is_ref, typ })
+    }
+}
+
+pub fn exec_spec_type(input: TokenStream) -> TokenStream {
+    let ExecSpecTypeInput { is_ref, typ } = parse_macro_input!(input as ExecSpecTypeInput);
+    let ctx = if is_ref { TypeKind::Ref } else { TypeKind::Owned };
+    match compile_type(&typ, ctx) {
+        Ok(ts) => ts.into(),
+        Err(err) => err.to_compile_error().into(),
     }
 }
 

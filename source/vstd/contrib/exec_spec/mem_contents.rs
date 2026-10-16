@@ -2,14 +2,6 @@
 //! the abstract memory-state view of the `PointsTo` permission family
 //! (`raw_ptr::PointsTo`, `simple_pptr::PointsTo`, `cell::PointsTo`).
 //!
-//! `MemContents<T>` is the *sample-able bottom layer* of a permission:
-//! the permission itself is a runtime ZST with no
-//! exec side, but its view - "this memory is `Uninit` or `Init(v)`" - is
-//! ordinary spec data that contracts project via `perm.is_init()` /
-//! `perm.value()`. The harness samples an `ExecMemContents<T>` as the
-//! shadow model, materializes real memory to match, and evaluates the
-//! rewritten contract against the model.
-//!
 //! Unlike `Option<T>` (whose exec mirror is itself), `MemContents` needs a
 //! distinct exec type: it is a `ghost enum`, so its constructors don't
 //! exist in exec code under `cargo verus verify`.
@@ -20,12 +12,63 @@ use crate::raw_ptr::MemContents;
 verus! {
 
 /// `MemContents<T>` is compiled to `ExecMemContents<T>`
-#[derive(Eq, PartialEq, Debug)]
+#[derive(Eq, Hash, PartialEq, Debug)]
 pub enum ExecMemContents<T> {
     /// Mirror of [`MemContents::Uninit`]
     Uninit,
     /// Mirror of [`MemContents::Init`]
     Init(T),
+}
+
+#[allow(non_snake_case)]
+impl<T: DeepView> ExecMemContents<T> {
+    #[inline(always)]
+    pub fn exec_is_Init(&self) -> (res: bool)
+        ensures
+            res == self.deep_view() is Init,
+    {
+        match self {
+            ExecMemContents::Init(_) => true,
+            ExecMemContents::Uninit => false,
+        }
+    }
+
+    #[inline(always)]
+    pub fn exec_is_Uninit(&self) -> (res: bool)
+        ensures
+            res == self.deep_view() is Uninit,
+    {
+        match self {
+            ExecMemContents::Uninit => true,
+            ExecMemContents::Init(_) => false,
+        }
+    }
+
+    #[inline(always)]
+    pub fn exec_arrow_Init_0(&self) -> (res: &T)
+        requires
+            self.deep_view() is Init,
+        ensures
+            res.deep_view() == self.deep_view()->Init_0,
+    {
+        match self {
+            ExecMemContents::Init(t) => t,
+            ExecMemContents::Uninit => crate::pervasive::unreached(),
+        }
+    }
+
+    #[inline(always)]
+    pub fn exec_arrow_0(&self) -> (res: &T)
+        requires
+            self.deep_view() is Init,
+        ensures
+            res.deep_view() == self.deep_view()->0,
+    {
+        match self {
+            ExecMemContents::Init(t) => t,
+            ExecMemContents::Uninit => crate::pervasive::unreached(),
+        }
+    }
 }
 
 /// Implementations for shared traits
@@ -135,31 +178,10 @@ impl<'a, T> ExecSpecMemContents<'a> for &'a ExecMemContents<T> where T: DeepView
         match self {
             ExecMemContents::Init(t) => t.deep_clone(),
             ExecMemContents::Uninit => {
-                // Unreachable under the `is_init_spec` requires. Keep a
-                // runtime panic (not UB) as the erased-build behavior so a
-                // harness bug surfaces as a clean failure.
+                // Unreachable under the `is_init_spec` requires.
                 crate::pervasive::unreached()
             },
         }
-    }
-}
-
-/// Harness-side constructor: build the shadow model from a sampled
-/// `Option<T>` (`None` -> `Uninit`, `Some(v)` -> `Init(v)`). Sampling an
-/// `Option` and wrapping at the call site follows the `ExecMultiset`
-/// precedent (sample a `HashMap`, wrap into the exec mirror), so no
-/// backend-specific strategy impl is needed for this type.
-#[inline(always)]
-pub fn exec_mem_contents_from_option<T: DeepView>(o: Option<T>) -> (res: ExecMemContents<T>)
-    ensures
-        res.deep_view() == match o.deep_view() {
-            Some(v) => MemContents::Init(v),
-            None => MemContents::Uninit,
-        },
-{
-    match o {
-        Some(t) => ExecMemContents::Init(t),
-        None => ExecMemContents::Uninit,
     }
 }
 
